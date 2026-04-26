@@ -50,22 +50,64 @@ CREATE TABLE IF NOT EXISTS metrics_dns (
     target      TEXT NOT NULL DEFAULT ''
 );
 
-CREATE INDEX IF NOT EXISTS idx_ip_history_ts    ON ip_history(detected_at);
-CREATE INDEX IF NOT EXISTS idx_metrics_fast_ts  ON metrics_fast(timestamp);
-CREATE INDEX IF NOT EXISTS idx_metrics_slow_ts  ON metrics_slow(timestamp);
-CREATE INDEX IF NOT EXISTS idx_metrics_dns_ts   ON metrics_dns(timestamp);
+-- Cloudflare endpoint probe results
+CREATE TABLE IF NOT EXISTS metrics_cloudflare (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp     TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    name          TEXT    NOT NULL DEFAULT '',
+    url           TEXT    NOT NULL DEFAULT '',
+    http_status   INTEGER NOT NULL DEFAULT 0,
+    is_up         INTEGER NOT NULL DEFAULT 0,  -- 1 = up, 0 = down
+    is_cloudflare INTEGER NOT NULL DEFAULT 0,
+    cf_ray        TEXT    NOT NULL DEFAULT '',
+    pop_code      TEXT    NOT NULL DEFAULT '',
+    cache_status  TEXT    NOT NULL DEFAULT '',
+    dns_ms        REAL,
+    connect_ms    REAL,
+    tls_ms        REAL,
+    ttfb_ms       REAL,
+    total_ms      REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ip_history_ts      ON ip_history(detected_at);
+CREATE INDEX IF NOT EXISTS idx_metrics_fast_ts    ON metrics_fast(timestamp);
+CREATE INDEX IF NOT EXISTS idx_metrics_slow_ts    ON metrics_slow(timestamp);
+CREATE INDEX IF NOT EXISTS idx_metrics_dns_ts     ON metrics_dns(timestamp);
+CREATE INDEX IF NOT EXISTS idx_metrics_cf_ts      ON metrics_cloudflare(timestamp);
+CREATE INDEX IF NOT EXISTS idx_metrics_cf_name_ts ON metrics_cloudflare(name, timestamp);
 """
 
-# Migrations for users with an older DB (adds columns that may be missing).
+# Migrations for users with an older DB (each statement is tried individually;
+# OperationalError = already exists → silently skipped).
 _MIGRATIONS = [
     "ALTER TABLE metrics_fast ADD COLUMN rtt_mdev REAL",
-    "CREATE TABLE IF NOT EXISTS metrics_dns ("
-    "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
-    "  timestamp TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),"
-    "  dns_ms REAL,"
-    "  target TEXT NOT NULL DEFAULT ''"
-    ")",
+    (
+        "CREATE TABLE IF NOT EXISTS metrics_dns ("
+        "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  timestamp TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),"
+        "  dns_ms REAL,"
+        "  target TEXT NOT NULL DEFAULT ''"
+        ")"
+    ),
     "CREATE INDEX IF NOT EXISTS idx_metrics_dns_ts ON metrics_dns(timestamp)",
+    (
+        "CREATE TABLE IF NOT EXISTS metrics_cloudflare ("
+        "  id            INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  timestamp     TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),"
+        "  name          TEXT    NOT NULL DEFAULT '',"
+        "  url           TEXT    NOT NULL DEFAULT '',"
+        "  http_status   INTEGER NOT NULL DEFAULT 0,"
+        "  is_up         INTEGER NOT NULL DEFAULT 0,"
+        "  is_cloudflare INTEGER NOT NULL DEFAULT 0,"
+        "  cf_ray        TEXT    NOT NULL DEFAULT '',"
+        "  pop_code      TEXT    NOT NULL DEFAULT '',"
+        "  cache_status  TEXT    NOT NULL DEFAULT '',"
+        "  dns_ms        REAL, connect_ms REAL, tls_ms REAL,"
+        "  ttfb_ms       REAL, total_ms   REAL"
+        ")"
+    ),
+    "CREATE INDEX IF NOT EXISTS idx_metrics_cf_ts      ON metrics_cloudflare(timestamp)",
+    "CREATE INDEX IF NOT EXISTS idx_metrics_cf_name_ts ON metrics_cloudflare(name, timestamp)",
 ]
 
 
@@ -245,8 +287,87 @@ class Database:
             datetime.now(timezone.utc) - timedelta(days=days)
         ).strftime("%Y-%m-%dT%H:%M:%SZ")
         with self._conn() as conn:
-            conn.execute("DELETE FROM metrics_fast WHERE timestamp < ?",   (cutoff,))
-            conn.execute("DELETE FROM metrics_slow WHERE timestamp < ?",   (cutoff,))
-            conn.execute("DELETE FROM metrics_dns  WHERE timestamp < ?",   (cutoff,))
-            conn.execute("DELETE FROM ip_history   WHERE detected_at < ?", (cutoff,))
+            conn.execute("DELETE FROM metrics_fast        WHERE timestamp   < ?", (cutoff,))
+            conn.execute("DELETE FROM metrics_slow        WHERE timestamp   < ?", (cutoff,))
+            conn.execute("DELETE FROM metrics_dns         WHERE timestamp   < ?", (cutoff,))
+            conn.execute("DELETE FROM metrics_cloudflare  WHERE timestamp   < ?", (cutoff,))
+            conn.execute("DELETE FROM ip_history          WHERE detected_at < ?", (cutoff,))
         logger.debug("Cleaned up records older than %d days", days)
+
+    # ------------------------------------------------------------------ #
+    # Cloudflare metrics                                                   #
+    # ------------------------------------------------------------------ #
+
+    def record_cloudflare_probe(
+        self,
+        name: str,
+        url: str,
+        http_status: int,
+        is_up: bool,
+        is_cloudflare: bool,
+        cf_ray: str = "",
+        pop_code: str = "",
+        cache_status: str = "",
+        dns_ms: Optional[float] = None,
+        connect_ms: Optional[float] = None,
+        tls_ms: Optional[float] = None,
+        ttfb_ms: Optional[float] = None,
+        total_ms: Optional[float] = None,
+    ) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO metrics_cloudflare"
+                " (name, url, http_status, is_up, is_cloudflare,"
+                "  cf_ray, pop_code, cache_status,"
+                "  dns_ms, connect_ms, tls_ms, ttfb_ms, total_ms)"
+                " VALUES (?,?,?,?,?, ?,?,?, ?,?,?,?,?)",
+                (
+                    name, url, http_status, int(is_up), int(is_cloudflare),
+                    cf_ray, pop_code, cache_status,
+                    dns_ms, connect_ms, tls_ms, ttfb_ms, total_ms,
+                ),
+            )
+
+    def get_cloudflare_uptime(self, name: str, hours: int = 24) -> Dict[str, Any]:
+        """
+        Return uptime stats for *name* over the last *hours* hours.
+
+        Result keys: uptime_pct, total_checks, up_checks, avg_ttfb_ms,
+                     avg_total_ms, last_status, last_pop
+        """
+        since = (
+            datetime.now(timezone.utc) - timedelta(hours=hours)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT"
+                "  COUNT(*)           AS total,"
+                "  SUM(is_up)         AS up_count,"
+                "  AVG(ttfb_ms)       AS avg_ttfb,"
+                "  AVG(total_ms)      AS avg_total,"
+                "  MAX(timestamp)     AS last_ts"
+                " FROM metrics_cloudflare"
+                " WHERE name=? AND timestamp >= ?",
+                (name, since),
+            ).fetchone()
+
+            last_row = conn.execute(
+                "SELECT http_status, pop_code FROM metrics_cloudflare"
+                " WHERE name=? ORDER BY timestamp DESC LIMIT 1",
+                (name,),
+            ).fetchone()
+
+        if not row or not row["total"]:
+            return {}
+
+        total    = row["total"]
+        up_count = row["up_count"] or 0
+        return {
+            "uptime_pct":  round(up_count / total * 100, 1),
+            "total_checks": total,
+            "up_checks":   up_count,
+            "avg_ttfb_ms": round(row["avg_ttfb"]  or 0, 1),
+            "avg_total_ms":round(row["avg_total"] or 0, 1),
+            "last_status": last_row["http_status"] if last_row else 0,
+            "last_pop":    last_row["pop_code"]    if last_row else "",
+        }

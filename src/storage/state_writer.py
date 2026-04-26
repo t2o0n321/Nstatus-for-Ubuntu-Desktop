@@ -159,6 +159,9 @@ def format_conky_text(state: Dict[str, Any]) -> str:  # noqa: C901
     h24_rtt  = h24.get("rtt_avg")
     h24_loss = h24.get("packet_loss")
 
+    # ── Cloudflare endpoints ──────────────────────────────────────── #
+    cf_endpoints: list = state.get("cloudflare_endpoints", [])
+
     # ── Build lines ───────────────────────────────────────────────── #
     SEP = f"{_c('#333333')}────────────────────────────────"
 
@@ -213,8 +216,85 @@ def format_conky_text(state: Dict[str, Any]) -> str:  # noqa: C901
         f"  {_c(DM)}              {ip_type_reason}",
         f"  {_c(D)}IP Changed    {_c(DM)}{last_change}",
         "",
-        SEP,
     ]
+
+    # ── Cloudflare section (only rendered if endpoints configured) ─── #
+    if cf_endpoints:
+        lines.append(_section("Cloudflare Services") + "─" * 6)
+        for ep in cf_endpoints:
+            name         = ep.get("name", ep.get("url", "?"))
+            http_status  = ep.get("http_status", 0)
+            is_up        = ep.get("is_up", False)
+            is_cf        = ep.get("is_cloudflare", False)
+            cf_ray       = ep.get("cf_ray", "")
+            pop_code     = ep.get("pop_code", "")
+            pop_city     = ep.get("pop_city", "")
+            cache_status = ep.get("cache_status", "")
+            ttfb_ms      = ep.get("ttfb_ms")
+            total_ms     = ep.get("total_ms")
+            tls_ms       = ep.get("tls_ms")
+            uptime_24h   = ep.get("uptime_24h")
+            checked_at   = ep.get("checked_at", "")
+            error_msg    = ep.get("error_msg", "")
+            cf_error_msg = ep.get("cf_error_msg", "")
+
+            # Status color
+            if http_status == 0:
+                status_c = "#ff5252"
+                status_s = "✗ No response"
+            elif is_up:
+                status_c = "#00e676"
+                status_s = f"✓ {http_status} OK"
+            elif 400 <= http_status < 500:
+                status_c = "#ffca28"
+                status_s = f"⚠ {http_status} Client Err"
+            else:
+                status_c = "#ff5252"
+                status_s = f"✗ {http_status}"
+                if cf_error_msg:
+                    status_s += f" ({cf_error_msg})"
+
+            # Cache badge
+            cache_color = {
+                "HIT":      "#00e676",
+                "MISS":     "#ffca28",
+                "DYNAMIC":  "#888888",
+                "BYPASS":   "#ff9800",
+                "EXPIRED":  "#ff9800",
+                "STALE":    "#ff9800",
+            }.get(cache_status, "#555555")
+            cache_badge = f"  {_c(cache_color)}[{cache_status}]" if cache_status else ""
+
+            # PoP display
+            pop_str = pop_code
+            if pop_city and pop_city != pop_code:
+                pop_str = f"{pop_code} {_c(DM)}({pop_city})"
+
+            # Uptime badge
+            if uptime_24h is not None:
+                u_color = "#00e676" if uptime_24h >= 99 else "#ffca28" if uptime_24h >= 95 else "#ff5252"
+                uptime_str = f"{_c(u_color)}{uptime_24h:.1f}%"
+            else:
+                uptime_str = f"{_c(DM)}—"
+
+            # Cloudflare shield marker
+            cf_shield = f"{_c('#f6821f')} ☁CF" if is_cf else f"{_c(DM)} (no CF)"
+
+            lines += [
+                f"  {_c(W)}{name}{cf_shield}",
+                f"    {_c(D)}Status   {_c(status_c)}{status_s}{cache_badge}",
+                f"    {_c(D)}TTFB     {_c('#29b6f6')}{_f(ttfb_ms, 0, ' ms')}"
+                f"  {_c(D)}Total {_c(DM)}{_f(total_ms, 0, ' ms')}",
+                f"    {_c(D)}TLS      {_c(DM)}{_f(tls_ms, 0, ' ms')}"
+                f"  {_c(D)}PoP {_c(W)}{pop_str}",
+                f"    {_c(D)}Uptime   {uptime_str}{_c(DM)} (24 h)"
+                + (f"  {_c(DM)}@ {checked_at}" if checked_at else ""),
+            ]
+            if error_msg:
+                lines.append(f"    {_c('#ff5252')}⚠ {error_msg}")
+            lines.append("")
+
+    lines.append(SEP)
     return "\n".join(lines)
 
 

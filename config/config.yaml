@@ -45,3 +45,22 @@ logging:
   level: "INFO"          # DEBUG | INFO | WARNING | ERROR
   max_bytes: 10485760    # 10 MB per log file
   backup_count: 3        # number of rotated log files to keep
+
+# ── Cloudflare service monitoring ──────────────────────────────────────────
+# Add your own services here. Both CDN and Tunnel endpoints are supported.
+# Each entry requires 'url' and optionally 'name'.
+# Leave 'endpoints' as an empty list ([]) to disable Cloudflare monitoring.
+cloudflare:
+  endpoints:
+    - name: "Web"
+      url:  "https://example.com"
+    # - name: "API"
+    #   url:  "https://api.example.com/health"
+    # - name: "Dashboard"
+    #   url:  "https://dash.example.com"
+
+  # How often to probe each endpoint (seconds)
+  check_interval_seconds: 60
+
+  # Maximum seconds to wait for a single HTTP response
+  timeout_seconds: 10

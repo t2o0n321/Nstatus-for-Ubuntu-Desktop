@@ -42,6 +42,12 @@ _DEFAULTS: dict = {
         "max_bytes": 10_485_760,
         "backup_count": 3,
     },
+    "cloudflare": {
+        # List of dicts: [{name: "My Site", url: "https://example.com"}, …]
+        "endpoints": [],
+        "check_interval_seconds": 60,
+        "timeout_seconds": 10,
+    },
 }
 
 
@@ -162,3 +168,22 @@ class Config:
     @property
     def iperf3_server(self) -> str:
         return self.get("throughput", "iperf3_server", default="")
+
+    # ------------------------------------------------------------------ #
+    # Cloudflare                                                           #
+    # ------------------------------------------------------------------ #
+
+    @property
+    def cloudflare_endpoints(self) -> list:
+        """List of dicts with at least 'url' and optionally 'name'."""
+        raw = self.get("cloudflare", "endpoints", default=[])
+        # Validate: each entry must have a non-empty 'url'
+        return [ep for ep in (raw or []) if isinstance(ep, dict) and ep.get("url")]
+
+    @property
+    def cloudflare_check_interval(self) -> int:
+        return int(self.get("cloudflare", "check_interval_seconds", default=60))
+
+    @property
+    def cloudflare_timeout(self) -> int:
+        return int(self.get("cloudflare", "timeout_seconds", default=10))

@@ -4,11 +4,12 @@ NStatus — Desktop Network Monitor daemon for Ubuntu.
 
 Async loops
 ───────────
-  fast_loop    — ping QoS + DNS latency + gateway latency  (fast_interval s)
-  slow_loop    — throughput test                            (slow_interval s)
-  ip_loop      — public IP + ISP + IPv6 check              (ip_check_interval s)
-  history_loop — pull 1 h / 24 h averages from SQLite      (5 min)
-  cleanup_loop — prune old DB records                       (24 h)
+  fast_loop       — ping QoS + DNS latency + gateway latency  (fast_interval s)
+  slow_loop       — throughput test                            (slow_interval s)
+  ip_loop         — public IP + ISP + IPv6 check              (ip_check_interval s)
+  cloudflare_loop — probe Cloudflare-served endpoints         (cf_check_interval s)
+  history_loop    — pull 1 h / 24 h averages from SQLite      (5 min)
+  cleanup_loop    — prune old DB records                       (24 h)
 
 Writes results atomically to:
   ~/.local/share/nstatus/state.json       (machine-readable)
@@ -23,7 +24,7 @@ import signal
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -35,6 +36,7 @@ from src.collector.ip_collector import collect_ip_info
 from src.collector.throughput_collector import collect_throughput
 from src.collector.dns_collector import collect_dns_latency
 from src.collector.gateway_collector import collect_gateway_info, collect_ipv6_status
+from src.collector.cloudflare_collector import probe_all_endpoints
 from src.analyzer.stats import compute_ping_stats
 from src.analyzer.ip_tracker import IPTracker
 from src.analyzer.quality_score import compute_quality_score, score_label, score_color
@@ -86,21 +88,22 @@ logger = logging.getLogger(__name__)
 # ------------------------------------------------------------------ #
 
 _INITIAL_STATE: Dict[str, Any] = {
-    "updated_at":      "Starting…",
-    "fast_metrics":    {},
-    "slow_metrics":    {},
-    "dns_metrics":     {},
-    "gateway_metrics": {},
-    "ipv6":            {},
-    "ip_info":         {},
-    "ip_type":         "UNCERTAIN",
-    "ip_type_reason":  "Not yet checked",
-    "last_ip_change":  "Unknown",
-    "history_1h":      {},
-    "history_24h":     {},
-    "quality_score":   None,
-    "quality_label":   "N/A",
-    "quality_color":   "#888888",
+    "updated_at":           "Starting…",
+    "fast_metrics":         {},
+    "slow_metrics":         {},
+    "dns_metrics":          {},
+    "gateway_metrics":      {},
+    "ipv6":                 {},
+    "ip_info":              {},
+    "ip_type":              "UNCERTAIN",
+    "ip_type_reason":       "Not yet checked",
+    "last_ip_change":       "Unknown",
+    "history_1h":           {},
+    "history_24h":          {},
+    "quality_score":        None,
+    "quality_label":        "N/A",
+    "quality_color":        "#888888",
+    "cloudflare_endpoints": [],   # list of probe result dicts
 }
 
 
@@ -169,6 +172,25 @@ class NStatusDaemon:
                 await self._collect_ip()
             except Exception as exc:
                 logger.error("ip_loop error: %s", exc, exc_info=True)
+            await asyncio.sleep(interval)
+
+    async def _cloudflare_loop(self) -> None:
+        """Probe all Cloudflare endpoints at cf_check_interval seconds."""
+        endpoints = self._cfg.cloudflare_endpoints
+        if not endpoints:
+            logger.info("cloudflare_loop: no endpoints configured, skipping")
+            return
+        interval = self._cfg.cloudflare_check_interval
+        timeout  = self._cfg.cloudflare_timeout
+        logger.info(
+            "cloudflare_loop started (%d endpoint(s), interval=%ds)",
+            len(endpoints), interval,
+        )
+        while self._running:
+            try:
+                await self._collect_cloudflare()
+            except Exception as exc:
+                logger.error("cloudflare_loop error: %s", exc, exc_info=True)
             await asyncio.sleep(interval)
 
     async def _history_loop(self) -> None:
@@ -314,6 +336,63 @@ class NStatusDaemon:
         self._flush()
         logger.debug("ip ← %s  type=%s", ip_info["ip"], ip_type)
 
+    async def _collect_cloudflare(self) -> None:
+        endpoints = self._cfg.cloudflare_endpoints
+        timeout   = self._cfg.cloudflare_timeout
+        if not endpoints:
+            return
+
+        results = await probe_all_endpoints(endpoints, timeout=timeout)
+
+        serialised: List[Dict] = []
+        for r in results:
+            # Persist to DB
+            self._db.record_cloudflare_probe(
+                name=r.name, url=r.url,
+                http_status=r.http_status,
+                is_up=r.is_up,
+                is_cloudflare=r.is_cloudflare,
+                cf_ray=r.cf_ray,
+                pop_code=r.pop_code,
+                cache_status=r.cache_status,
+                dns_ms=r.dns_ms or None,
+                connect_ms=r.connect_ms or None,
+                tls_ms=r.tls_ms or None,
+                ttfb_ms=r.ttfb_ms or None,
+                total_ms=r.total_ms or None,
+            )
+            # Pull uptime stats (last 24 h) from DB
+            uptime = self._db.get_cloudflare_uptime(r.name, hours=24)
+
+            serialised.append({
+                "name":          r.name,
+                "url":           r.url,
+                "http_status":   r.http_status,
+                "is_cloudflare": r.is_cloudflare,
+                "is_up":         r.is_up,
+                "cf_ray":        r.cf_ray,
+                "pop_code":      r.pop_code,
+                "pop_city":      r.pop_city,
+                "cache_status":  r.cache_status,
+                "dns_ms":        r.dns_ms,
+                "connect_ms":    r.connect_ms,
+                "tls_ms":        r.tls_ms,
+                "ttfb_ms":       r.ttfb_ms,
+                "total_ms":      r.total_ms,
+                "error_msg":     r.error_msg,
+                "cf_error_msg":  r.cf_error_msg,
+                "uptime_24h":    uptime.get("uptime_pct"),
+                "avg_ttfb_24h":  uptime.get("avg_ttfb_ms"),
+                "checked_at":    datetime.now().strftime("%H:%M:%S"),
+            })
+
+        self._state["cloudflare_endpoints"] = serialised
+        self._flush()
+        logger.info(
+            "CF probes: %s",
+            "  ".join(f"{r['name']}={r['http_status']}" for r in serialised),
+        )
+
     # ---------------------------------------------------------------- #
     # Lifecycle                                                          #
     # ---------------------------------------------------------------- #
@@ -324,11 +403,12 @@ class NStatusDaemon:
         self._flush()   # write "Starting…" placeholder immediately
 
         tasks = [
-            asyncio.create_task(self._fast_loop(),    name="fast_loop"),
-            asyncio.create_task(self._slow_loop(),    name="slow_loop"),
-            asyncio.create_task(self._ip_loop(),      name="ip_loop"),
-            asyncio.create_task(self._history_loop(), name="history_loop"),
-            asyncio.create_task(self._cleanup_loop(), name="cleanup_loop"),
+            asyncio.create_task(self._fast_loop(),       name="fast_loop"),
+            asyncio.create_task(self._slow_loop(),       name="slow_loop"),
+            asyncio.create_task(self._ip_loop(),         name="ip_loop"),
+            asyncio.create_task(self._cloudflare_loop(), name="cloudflare_loop"),
+            asyncio.create_task(self._history_loop(),    name="history_loop"),
+            asyncio.create_task(self._cleanup_loop(),    name="cleanup_loop"),
         ]
 
         try:
