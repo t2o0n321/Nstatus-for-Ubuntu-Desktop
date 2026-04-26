@@ -1,45 +1,47 @@
-# NStatus Network Monitor - Configuration
+# NStatus Network Monitor — Configuration
 # Copy to ~/.config/nstatus/config.yaml and edit as needed.
-# All paths support ~ expansion.
+# All path values support ~ expansion.
 
 network:
-  # Primary ping target (for RTT / jitter / loss)
+  # Primary ping / WAN latency target
   ping_target: "8.8.8.8"
-  # Fallback ping target used when primary is unreachable
+  # Fallback target used when primary returns no data
   ping_alt_target: "1.1.1.1"
-  # Number of ICMP packets per measurement cycle
+  # Packets per measurement cycle (keep ≤ 20 to stay within fast_interval)
   ping_count: 10
-  # How often (seconds) to run the fast (ping) loop
+  # Seconds between fast-loop runs (ping + DNS + gateway latency)
   fast_interval_seconds: 10
-  # How often (seconds) to run the slow (throughput) loop
-  slow_interval_seconds: 600   # 10 minutes
-  # How often (seconds) to re-check the public IP
+  # Seconds between slow-loop runs (throughput test)
+  slow_interval_seconds: 600    # 10 minutes
+  # Seconds between IP/ISP refresh
   ip_check_interval_seconds: 300  # 5 minutes
+  # Hostname used for DNS latency measurement
+  dns_target: "google.com"
 
 ip_tracking:
-  # How many days of IP history to keep in the database
+  # Days of IP history to keep in the database
   history_days: 30
-  # IP must be stable this many days before labelled "LIKELY_STATIC"
+  # IP must be stable this many days to be labelled LIKELY_STATIC
   static_threshold_days: 7
-  # This many distinct IPs in history_days → labelled "DYNAMIC"
+  # This many actual IP transitions in history_days → labelled DYNAMIC
   dynamic_change_threshold: 3
 
 paths:
-  data_dir:       "~/.local/share/nstatus"
-  log_dir:        "~/.local/share/nstatus/logs"
-  state_file:     "~/.local/share/nstatus/state.json"
-  db_file:        "~/.local/share/nstatus/nstatus.db"
+  data_dir:        "~/.local/share/nstatus"
+  log_dir:         "~/.local/share/nstatus/logs"
+  state_file:      "~/.local/share/nstatus/state.json"
+  db_file:         "~/.local/share/nstatus/nstatus.db"
   conky_data_file: "~/.local/share/nstatus/conky_data.txt"
 
 throughput:
-  # "speedtest" uses speedtest-cli  |  "iperf3" uses a local iperf3 server
+  # "speedtest" uses speedtest-cli  |  "iperf3" requires a server
   method: "speedtest"
   # Only used when method = "iperf3"
   iperf3_server: ""
-  # Maximum seconds to wait for a throughput test before giving up
+  # Abort the test if it exceeds this many seconds
   timeout_seconds: 120
 
 logging:
   level: "INFO"          # DEBUG | INFO | WARNING | ERROR
   max_bytes: 10485760    # 10 MB per log file
-  backup_count: 3        # keep 3 rotated log files
+  backup_count: 3        # number of rotated log files to keep

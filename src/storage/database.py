@@ -5,7 +5,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Generator, List, Optional
+from typing import Any, Dict, Generator, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS metrics_fast (
     rtt_avg     REAL,
     rtt_min     REAL,
     rtt_max     REAL,
+    rtt_mdev    REAL,
     jitter      REAL,
     packet_loss REAL
 );
@@ -41,10 +42,31 @@ CREATE TABLE IF NOT EXISTS metrics_slow (
     method        TEXT NOT NULL DEFAULT ''
 );
 
+-- DNS latency snapshots
+CREATE TABLE IF NOT EXISTS metrics_dns (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    dns_ms      REAL,
+    target      TEXT NOT NULL DEFAULT ''
+);
+
 CREATE INDEX IF NOT EXISTS idx_ip_history_ts    ON ip_history(detected_at);
 CREATE INDEX IF NOT EXISTS idx_metrics_fast_ts  ON metrics_fast(timestamp);
 CREATE INDEX IF NOT EXISTS idx_metrics_slow_ts  ON metrics_slow(timestamp);
+CREATE INDEX IF NOT EXISTS idx_metrics_dns_ts   ON metrics_dns(timestamp);
 """
+
+# Migrations for users with an older DB (adds columns that may be missing).
+_MIGRATIONS = [
+    "ALTER TABLE metrics_fast ADD COLUMN rtt_mdev REAL",
+    "CREATE TABLE IF NOT EXISTS metrics_dns ("
+    "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+    "  timestamp TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),"
+    "  dns_ms REAL,"
+    "  target TEXT NOT NULL DEFAULT ''"
+    ")",
+    "CREATE INDEX IF NOT EXISTS idx_metrics_dns_ts ON metrics_dns(timestamp)",
+]
 
 
 class Database:
@@ -52,6 +74,7 @@ class Database:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._path = str(db_path)
         self._init_schema()
+        self._run_migrations()
 
     # ------------------------------------------------------------------ #
     # Connection management                                                #
@@ -59,9 +82,8 @@ class Database:
 
     @contextmanager
     def _conn(self) -> Generator[sqlite3.Connection, None, None]:
-        conn = sqlite3.connect(self._path, timeout=10, isolation_level=None)
+        conn = sqlite3.connect(self._path, timeout=10)
         conn.row_factory = sqlite3.Row
-        # WAL mode: allows concurrent readers while a writer is active
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         try:
@@ -69,7 +91,10 @@ class Database:
             yield conn
             conn.execute("COMMIT")
         except Exception:
-            conn.execute("ROLLBACK")
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
             raise
         finally:
             conn.close()
@@ -81,6 +106,18 @@ class Database:
             conn.commit()
         finally:
             conn.close()
+
+    def _run_migrations(self) -> None:
+        """Apply any schema migrations that may be missing in an older DB."""
+        for sql in _MIGRATIONS:
+            try:
+                conn = sqlite3.connect(self._path, timeout=10)
+                conn.execute(sql)
+                conn.commit()
+                conn.close()
+            except sqlite3.OperationalError:
+                # Column/table already exists — expected on fresh installs
+                pass
 
     # ------------------------------------------------------------------ #
     # IP history                                                           #
@@ -130,14 +167,16 @@ class Database:
         rtt_avg: float,
         rtt_min: float,
         rtt_max: float,
+        rtt_mdev: float,
         jitter: float,
         packet_loss: float,
     ) -> None:
         with self._conn() as conn:
             conn.execute(
-                "INSERT INTO metrics_fast (rtt_avg, rtt_min, rtt_max, jitter, packet_loss)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (rtt_avg, rtt_min, rtt_max, jitter, packet_loss),
+                "INSERT INTO metrics_fast"
+                "  (rtt_avg, rtt_min, rtt_max, rtt_mdev, jitter, packet_loss)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (rtt_avg, rtt_min, rtt_max, rtt_mdev, jitter, packet_loss),
             )
 
     # ------------------------------------------------------------------ #
@@ -158,6 +197,46 @@ class Database:
             )
 
     # ------------------------------------------------------------------ #
+    # DNS metrics                                                          #
+    # ------------------------------------------------------------------ #
+
+    def record_dns_metric(self, dns_ms: float, target: str = "") -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO metrics_dns (dns_ms, target) VALUES (?, ?)",
+                (dns_ms, target),
+            )
+
+    # ------------------------------------------------------------------ #
+    # Historical averages                                                  #
+    # ------------------------------------------------------------------ #
+
+    def get_fast_averages(self, hours: int) -> Dict[str, Any]:
+        """Return avg RTT, jitter, and packet loss over the past *hours* hours."""
+        since = (
+            datetime.now(timezone.utc) - timedelta(hours=hours)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT"
+                "  AVG(rtt_avg)     AS rtt_avg,"
+                "  AVG(jitter)      AS jitter,"
+                "  AVG(packet_loss) AS packet_loss,"
+                "  COUNT(*)         AS samples"
+                " FROM metrics_fast"
+                " WHERE timestamp >= ?",
+                (since,),
+            ).fetchone()
+        if row and row["samples"]:
+            return {
+                "rtt_avg":     round(row["rtt_avg"],     2),
+                "jitter":      round(row["jitter"],      2),
+                "packet_loss": round(row["packet_loss"], 2),
+                "samples":     row["samples"],
+            }
+        return {}
+
+    # ------------------------------------------------------------------ #
     # Maintenance                                                          #
     # ------------------------------------------------------------------ #
 
@@ -166,10 +245,8 @@ class Database:
             datetime.now(timezone.utc) - timedelta(days=days)
         ).strftime("%Y-%m-%dT%H:%M:%SZ")
         with self._conn() as conn:
-            conn.execute(
-                "DELETE FROM metrics_fast WHERE timestamp < ?", (cutoff,)
-            )
-            conn.execute(
-                "DELETE FROM metrics_slow WHERE timestamp < ?", (cutoff,)
-            )
+            conn.execute("DELETE FROM metrics_fast WHERE timestamp < ?",   (cutoff,))
+            conn.execute("DELETE FROM metrics_slow WHERE timestamp < ?",   (cutoff,))
+            conn.execute("DELETE FROM metrics_dns  WHERE timestamp < ?",   (cutoff,))
+            conn.execute("DELETE FROM ip_history   WHERE detected_at < ?", (cutoff,))
         logger.debug("Cleaned up records older than %d days", days)

@@ -16,11 +16,23 @@ class ThroughputResult:
     method: str
 
 
+async def _kill(proc: asyncio.subprocess.Process) -> None:
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        pass
+    try:
+        await proc.communicate()
+    except Exception:
+        pass
+
+
 # ------------------------------------------------------------------ #
 # speedtest-cli backend                                                #
 # ------------------------------------------------------------------ #
 
 async def _run_speedtest(timeout: int) -> Optional[ThroughputResult]:
+    proc: Optional[asyncio.subprocess.Process] = None
     try:
         proc = await asyncio.create_subprocess_exec(
             "speedtest-cli", "--json", "--secure",
@@ -32,14 +44,16 @@ async def _run_speedtest(timeout: int) -> Optional[ThroughputResult]:
         )
     except asyncio.TimeoutError:
         logger.warning("speedtest-cli timed out after %ds", timeout)
+        if proc is not None:
+            await _kill(proc)
         return None
     except FileNotFoundError:
-        logger.error(
-            "speedtest-cli not found — install with: pip install speedtest-cli"
-        )
+        logger.error("speedtest-cli not found — install: pip install speedtest-cli")
         return None
     except Exception as exc:
-        logger.error("speedtest-cli subprocess error: %s", exc)
+        logger.error("speedtest-cli error: %s", exc)
+        if proc is not None:
+            await _kill(proc)
         return None
 
     if proc.returncode != 0:
@@ -58,7 +72,7 @@ async def _run_speedtest(timeout: int) -> Optional[ThroughputResult]:
 
     return ThroughputResult(
         download_mbps=round(data["download"] / 1_000_000, 2),
-        upload_mbps=round(data["upload"] / 1_000_000, 2),
+        upload_mbps=round(data["upload"]   / 1_000_000, 2),
         method="speedtest-cli",
     )
 
@@ -70,10 +84,12 @@ async def _run_speedtest(timeout: int) -> Optional[ThroughputResult]:
 async def _iperf3_direction(
     server: str, reverse: bool, timeout: int
 ) -> Optional[float]:
-    """Run one iperf3 test, return bits-per-second or None."""
+    """Run one iperf3 direction, return bits-per-second or None on failure."""
     cmd = ["iperf3", "-c", server, "-J", "-t", "10"]
     if reverse:
-        cmd.append("-R")  # server→client = download
+        cmd.append("-R")   # server→client = download
+
+    proc: Optional[asyncio.subprocess.Process] = None
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -81,14 +97,18 @@ async def _iperf3_direction(
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        if proc.returncode != 0:
+            return None
         data = json.loads(stdout.decode())
-        return data["end"]["sum_received"]["bits_per_second"]
+        return float(data["end"]["sum_received"]["bits_per_second"])
     except asyncio.TimeoutError:
-        logger.warning("iperf3 test to %s timed out", server)
+        logger.warning("iperf3 to %s timed out", server)
+        if proc is not None:
+            await _kill(proc)
     except (json.JSONDecodeError, KeyError) as exc:
         logger.error("iperf3 result parse failed: %s", exc)
     except FileNotFoundError:
-        logger.error("iperf3 not found — install with: sudo apt install iperf3")
+        logger.error("iperf3 not found — install: sudo apt install iperf3")
     except Exception as exc:
         logger.error("iperf3 error: %s", exc)
     return None
@@ -99,16 +119,23 @@ async def _run_iperf3(server: str, timeout: int) -> Optional[ThroughputResult]:
         logger.error("iperf3_server is not configured in config.yaml")
         return None
 
-    # Run download then upload sequentially (iperf3 server handles one at a time)
+    # Sequential: iperf3 server handles one client at a time.
     dl_bps = await _iperf3_direction(server, reverse=True,  timeout=timeout)
     ul_bps = await _iperf3_direction(server, reverse=False, timeout=timeout)
 
+    # Require both directions to have valid data.
     if dl_bps is None and ul_bps is None:
+        return None
+    if dl_bps is None:
+        logger.warning("iperf3 download test failed; discarding partial result")
+        return None
+    if ul_bps is None:
+        logger.warning("iperf3 upload test failed; discarding partial result")
         return None
 
     return ThroughputResult(
-        download_mbps=round((dl_bps or 0) / 1_000_000, 2),
-        upload_mbps=round((ul_bps or 0) / 1_000_000, 2),
+        download_mbps=round(dl_bps / 1_000_000, 2),
+        upload_mbps=round(ul_bps  / 1_000_000, 2),
         method="iperf3",
     )
 
@@ -124,14 +151,14 @@ async def collect_throughput(
 ) -> Optional[ThroughputResult]:
     """
     Run the configured throughput test and return a ThroughputResult.
-    Returns None on any failure so the caller can keep the last known values.
+    Returns None on any failure so the caller retains the last known values.
     """
     logger.info("Starting throughput test (method=%s)", method)
-    if method == "iperf3":
-        result = await _run_iperf3(iperf3_server, timeout)
-    else:
-        result = await _run_speedtest(timeout)
-
+    result = (
+        await _run_iperf3(iperf3_server, timeout)
+        if method == "iperf3"
+        else await _run_speedtest(timeout)
+    )
     if result:
         logger.info(
             "Throughput: DL=%.1f Mbps  UL=%.1f Mbps  [%s]",
@@ -139,5 +166,4 @@ async def collect_throughput(
         )
     else:
         logger.warning("Throughput test returned no result")
-
     return result

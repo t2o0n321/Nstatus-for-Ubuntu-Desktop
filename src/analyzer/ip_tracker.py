@@ -16,17 +16,17 @@ class IPTracker:
 
     Decision table
     ──────────────
-    distinct IPs in history_days ≥ dynamic_change_threshold  →  DYNAMIC
-    current IP stable for ≥ static_threshold_days             →  LIKELY_STATIC
-    any changes but below thresholds                          →  DYNAMIC  (err cautious)
-    no changes and below static threshold                     →  UNCERTAIN
+    actual IP transitions in history_days ≥ dynamic_change_threshold  →  DYNAMIC
+    current IP stable for ≥ static_threshold_days                     →  LIKELY_STATIC
+    any transitions but below both thresholds                         →  DYNAMIC (conservative)
+    no transitions and below static threshold                         →  UNCERTAIN
     """
 
     def __init__(self, db: Database, config) -> None:
         self._db = db
-        self._history_days: int          = config.get("ip_tracking", "history_days",           default=30)
-        self._static_days: int           = config.get("ip_tracking", "static_threshold_days",  default=7)
-        self._dynamic_threshold: int     = config.get("ip_tracking", "dynamic_change_threshold", default=3)
+        self._history_days: int      = config.get("ip_tracking", "history_days",            default=30)
+        self._static_days: int       = config.get("ip_tracking", "static_threshold_days",   default=7)
+        self._dynamic_threshold: int = config.get("ip_tracking", "dynamic_change_threshold", default=3)
 
     # ------------------------------------------------------------------ #
     # Public API                                                           #
@@ -63,10 +63,13 @@ class IPTracker:
         if not history:
             return "UNCERTAIN", "No history available yet"
 
-        # ── distinct IP count ─────────────────────────────────────── #
-        unique_ips = {row["ip"] for row in history}
-        n_distinct = len(unique_ips)
-        n_changes  = n_distinct - 1   # transitions between IPs
+        # ── Count actual IP transitions (A→B counts as 1, not distinct IPs) ─ #
+        n_changes = 0
+        prev_ip = history[0]["ip"]
+        for row in history[1:]:
+            if row["ip"] != prev_ip:
+                n_changes += 1
+            prev_ip = row["ip"]
 
         if n_changes >= self._dynamic_threshold:
             return (
@@ -74,8 +77,8 @@ class IPTracker:
                 f"IP changed {n_changes}× in last {self._history_days}d",
             )
 
-        # ── current-streak stability ──────────────────────────────── #
-        current_ip  = history[-1]["ip"]
+        # ── Current-streak stability ────────────────────────────────────── #
+        current_ip   = history[-1]["ip"]
         streak_start = self._streak_start(history, current_ip)
         now          = datetime.now(timezone.utc)
         stable_days  = (now - streak_start).days
@@ -127,7 +130,7 @@ class IPTracker:
 
     @staticmethod
     def _parse_ts(ts_str: str) -> datetime:
-        """Parse an ISO-8601 UTC timestamp from the database."""
+        """Parse an ISO-8601 UTC timestamp stored by the database."""
         ts_str = ts_str.rstrip("Z")
         dt = datetime.fromisoformat(ts_str)
         if dt.tzinfo is None:

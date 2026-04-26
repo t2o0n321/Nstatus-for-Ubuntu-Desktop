@@ -2,11 +2,13 @@
 """
 NStatus — Desktop Network Monitor daemon for Ubuntu.
 
-Runs four independent async loops:
-  fast_loop    — ping metrics every fast_interval seconds
-  slow_loop    — throughput test every slow_interval seconds
-  ip_loop      — public IP check every ip_check_interval seconds
-  cleanup_loop — prune old DB records once per day
+Async loops
+───────────
+  fast_loop    — ping QoS + DNS latency + gateway latency  (fast_interval s)
+  slow_loop    — throughput test                            (slow_interval s)
+  ip_loop      — public IP + ISP + IPv6 check              (ip_check_interval s)
+  history_loop — pull 1 h / 24 h averages from SQLite      (5 min)
+  cleanup_loop — prune old DB records                       (24 h)
 
 Writes results atomically to:
   ~/.local/share/nstatus/state.json       (machine-readable)
@@ -23,7 +25,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
 
-# Allow both `python src/main.py` and `python -m src.main` invocations.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.config import Config
@@ -32,8 +33,11 @@ from src.storage.state_writer import write_conky_data, write_state
 from src.collector.ping_collector import collect_ping
 from src.collector.ip_collector import collect_ip_info
 from src.collector.throughput_collector import collect_throughput
+from src.collector.dns_collector import collect_dns_latency
+from src.collector.gateway_collector import collect_gateway_info, collect_ipv6_status
 from src.analyzer.stats import compute_ping_stats
 from src.analyzer.ip_tracker import IPTracker
+from src.analyzer.quality_score import compute_quality_score, score_label, score_color
 
 
 # ------------------------------------------------------------------ #
@@ -42,31 +46,35 @@ from src.analyzer.ip_tracker import IPTracker
 
 def _setup_logging(config: Config) -> None:
     config.log_dir.mkdir(parents=True, exist_ok=True)
-    level = getattr(logging, config.get("logging", "level", default="INFO"), logging.INFO)
+    level_name = config.get("logging", "level", default="INFO")
+    level      = getattr(logging, level_name, None)
+    if not isinstance(level, int):
+        level = logging.INFO
+        print(f"[nstatus] Invalid logging level '{level_name}', defaulting to INFO")
 
     fmt = logging.Formatter(
         "%(asctime)s [%(levelname)-8s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    handlers: list = [logging.StreamHandler(sys.stdout)]
+    root = logging.getLogger()
+    root.setLevel(level)
+    # Avoid adding duplicate handlers if called more than once.
+    if root.handlers:
+        return
 
-    log_file = config.log_dir / "nstatus.log"
+    sh = logging.StreamHandler(sys.stdout)
+    sh.setFormatter(fmt)
+    root.addHandler(sh)
+
     rh = logging.handlers.RotatingFileHandler(
-        log_file,
-        maxBytes=config.get("logging", "max_bytes", default=10_485_760),
+        config.log_dir / "nstatus.log",
+        maxBytes=config.get("logging", "max_bytes",    default=10_485_760),
         backupCount=config.get("logging", "backup_count", default=3),
     )
     rh.setFormatter(fmt)
-    handlers.append(rh)
+    root.addHandler(rh)
 
-    root = logging.getLogger()
-    root.setLevel(level)
-    for h in handlers:
-        h.setFormatter(fmt)
-        root.addHandler(h)
-
-    # Silence noisy third-party loggers
     logging.getLogger("asyncio").setLevel(logging.WARNING)
 
 
@@ -81,10 +89,18 @@ _INITIAL_STATE: Dict[str, Any] = {
     "updated_at":      "Starting…",
     "fast_metrics":    {},
     "slow_metrics":    {},
+    "dns_metrics":     {},
+    "gateway_metrics": {},
+    "ipv6":            {},
     "ip_info":         {},
     "ip_type":         "UNCERTAIN",
     "ip_type_reason":  "Not yet checked",
     "last_ip_change":  "Unknown",
+    "history_1h":      {},
+    "history_24h":     {},
+    "quality_score":   None,
+    "quality_label":   "N/A",
+    "quality_color":   "#888888",
 }
 
 
@@ -107,47 +123,67 @@ class NStatusDaemon:
         except Exception as exc:
             logger.error("Failed to flush state: %s", exc)
 
+    def _update_quality_score(self) -> None:
+        fm  = self._state.get("fast_metrics", {})
+        dns = self._state.get("dns_metrics", {})
+        score = compute_quality_score(
+            rtt_avg=fm.get("rtt_avg"),
+            jitter=fm.get("jitter"),
+            packet_loss=fm.get("packet_loss"),
+            dns_ms=dns.get("dns_ms"),
+        )
+        self._state["quality_score"] = score
+        self._state["quality_label"] = score_label(score)
+        self._state["quality_color"] = score_color(score)
+
     # ---------------------------------------------------------------- #
     # Loops                                                              #
     # ---------------------------------------------------------------- #
 
     async def _fast_loop(self) -> None:
-        """Ping-based QoS metrics on a short interval."""
         interval = self._cfg.fast_interval
         logger.info("fast_loop started  (interval=%ds)", interval)
         while self._running:
             try:
                 await self._collect_fast()
             except Exception as exc:
-                logger.error("fast_loop unhandled error: %s", exc, exc_info=True)
+                logger.error("fast_loop error: %s", exc, exc_info=True)
             await asyncio.sleep(interval)
 
     async def _slow_loop(self) -> None:
-        """Throughput test on a long interval."""
         interval = self._cfg.slow_interval
         logger.info("slow_loop started  (interval=%ds)", interval)
-        # Stagger first run to avoid overloading on startup
-        await asyncio.sleep(45)
+        await asyncio.sleep(45)   # stagger to avoid startup overload
         while self._running:
             try:
                 await self._collect_slow()
             except Exception as exc:
-                logger.error("slow_loop unhandled error: %s", exc, exc_info=True)
+                logger.error("slow_loop error: %s", exc, exc_info=True)
             await asyncio.sleep(interval)
 
     async def _ip_loop(self) -> None:
-        """Public IP + ISP refresh on a medium interval."""
         interval = self._cfg.ip_check_interval
         logger.info("ip_loop started    (interval=%ds)", interval)
         while self._running:
             try:
                 await self._collect_ip()
             except Exception as exc:
-                logger.error("ip_loop unhandled error: %s", exc, exc_info=True)
+                logger.error("ip_loop error: %s", exc, exc_info=True)
             await asyncio.sleep(interval)
 
+    async def _history_loop(self) -> None:
+        """Refresh 1 h and 24 h historical averages from SQLite every 5 min."""
+        logger.info("history_loop started (interval=300s)")
+        while self._running:
+            try:
+                self._state["history_1h"]  = self._db.get_fast_averages(hours=1)
+                self._state["history_24h"] = self._db.get_fast_averages(hours=24)
+                self._flush()
+            except Exception as exc:
+                logger.error("history_loop error: %s", exc)
+            await asyncio.sleep(300)
+
     async def _cleanup_loop(self) -> None:
-        """Daily database maintenance."""
         logger.info("cleanup_loop started (interval=86400s)")
         while self._running:
             try:
@@ -167,18 +203,19 @@ class NStatusDaemon:
 
         rtts, sent = await collect_ping(target, count=count)
 
-        # Fallback to alt target on total failure
-        if not rtts and sent == count:
+        # Fallback: if primary returns no data, try the alternate target.
+        if not rtts:
             alt = self._cfg.ping_alt_target
-            logger.info("Primary ping failed, trying alt target %s", alt)
-            rtts, sent = await collect_ping(alt, count=count)
-            if rtts:
-                target = alt
+            if alt != target:
+                logger.info("Primary ping returned no data, trying alt %s", alt)
+                rtts, sent = await collect_ping(alt, count=count)
+                if rtts:
+                    target = alt
 
         stats = compute_ping_stats(rtts, sent)
         self._db.record_fast_metric(
             stats.rtt_avg, stats.rtt_min, stats.rtt_max,
-            stats.jitter, stats.packet_loss,
+            stats.rtt_mdev, stats.jitter, stats.packet_loss,
         )
 
         self._state["fast_metrics"] = {
@@ -192,11 +229,35 @@ class NStatusDaemon:
             "target":      target,
         }
         self._state["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # DNS latency (runs concurrently with gateway ping)
+        dns_target = self._cfg.get("network", "dns_target", default="google.com")
+        dns_server = self._cfg.ping_target  # reuse the ping target as DNS resolver
+
+        dns_ms, gw_info = await asyncio.gather(
+            collect_dns_latency(hostname=dns_target, dns_server="8.8.8.8"),
+            collect_gateway_info(),
+            return_exceptions=False,
+        )
+
+        if isinstance(dns_ms, float):
+            self._db.record_dns_metric(dns_ms, target=dns_target)
+            self._state["dns_metrics"] = {"dns_ms": dns_ms, "target": dns_target}
+        elif isinstance(dns_ms, Exception):
+            logger.error("DNS collection raised: %s", dns_ms)
+
+        if isinstance(gw_info, dict):
+            self._state["gateway_metrics"] = gw_info
+        elif isinstance(gw_info, Exception):
+            logger.error("Gateway collection raised: %s", gw_info)
+
+        self._update_quality_score()
         self._flush()
 
         logger.debug(
-            "fast ← RTT=%.1fms  jitter=%.1fms  loss=%.1f%%",
+            "fast ← RTT=%.1fms  jitter=%.1fms  loss=%.1f%%  dns=%.0fms",
             stats.rtt_avg, stats.jitter, stats.packet_loss,
+            dns_ms if isinstance(dns_ms, float) else -1,
         )
 
     async def _collect_slow(self) -> None:
@@ -207,10 +268,7 @@ class NStatusDaemon:
         )
         if result is None:
             return
-
-        self._db.record_slow_metric(
-            result.download_mbps, result.upload_mbps, result.method
-        )
+        self._db.record_slow_metric(result.download_mbps, result.upload_mbps, result.method)
         self._state["slow_metrics"] = {
             "download_mbps": result.download_mbps,
             "upload_mbps":   result.upload_mbps,
@@ -220,32 +278,41 @@ class NStatusDaemon:
         self._flush()
 
     async def _collect_ip(self) -> None:
-        info = await collect_ip_info()
-        if info is None:
+        # Run IP lookup and IPv6 check concurrently.
+        ip_info, ipv6 = await asyncio.gather(
+            collect_ip_info(),
+            collect_ipv6_status(),
+            return_exceptions=False,
+        )
+
+        if isinstance(ipv6, dict):
+            self._state["ipv6"] = ipv6
+        elif isinstance(ipv6, Exception):
+            logger.error("IPv6 check raised: %s", ipv6)
+
+        if not isinstance(ip_info, dict) or not ip_info:
             return
 
         self._ip_tracker.check_and_record(
-            current_ip=info["ip"],
-            isp=info.get("isp", ""),
-            asn=info.get("asn", ""),
-            country=info.get("country", ""),
-            city=info.get("city", ""),
+            current_ip=ip_info["ip"],
+            isp=ip_info.get("isp", ""),
+            asn=ip_info.get("asn", ""),
+            country=ip_info.get("country", ""),
+            city=ip_info.get("city", ""),
         )
 
         ip_type, reason = self._ip_tracker.get_ip_type()
         last_change     = self._ip_tracker.get_last_change_time()
 
-        self._state["ip_info"]        = info
+        self._state["ip_info"]        = ip_info
         self._state["ip_type"]        = ip_type
         self._state["ip_type_reason"] = reason
         self._state["last_ip_change"] = (
             last_change.strftime("%Y-%m-%d %H:%M UTC")
-            if last_change
-            else "No change recorded"
+            if last_change else "No change recorded"
         )
         self._flush()
-
-        logger.debug("ip ← %s  type=%s", info["ip"], ip_type)
+        logger.debug("ip ← %s  type=%s", ip_info["ip"], ip_type)
 
     # ---------------------------------------------------------------- #
     # Lifecycle                                                          #
@@ -254,14 +321,13 @@ class NStatusDaemon:
     async def run(self) -> None:
         logger.info("NStatus daemon starting…")
         self._cfg.data_dir.mkdir(parents=True, exist_ok=True)
-
-        # Write a "starting" placeholder so Conky shows something immediately
-        self._flush()
+        self._flush()   # write "Starting…" placeholder immediately
 
         tasks = [
             asyncio.create_task(self._fast_loop(),    name="fast_loop"),
             asyncio.create_task(self._slow_loop(),    name="slow_loop"),
             asyncio.create_task(self._ip_loop(),      name="ip_loop"),
+            asyncio.create_task(self._history_loop(), name="history_loop"),
             asyncio.create_task(self._cleanup_loop(), name="cleanup_loop"),
         ]
 
@@ -276,7 +342,6 @@ class NStatusDaemon:
             logger.info("NStatus daemon stopped.")
 
     def request_stop(self) -> None:
-        logger.info("Stop requested")
         self._running = False
 
 

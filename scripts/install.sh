@@ -60,6 +60,7 @@ check_cmd pip3
 check_cmd ping
 check_cmd curl
 check_cmd conky
+check_cmd dig     # dnsutils — for DNS latency measurement
 
 # Optional but recommended
 if ! command -v speedtest-cli &>/dev/null; then
@@ -68,11 +69,14 @@ fi
 if ! command -v iperf3 &>/dev/null; then
     info "  ℹ  iperf3 not found — only needed if throughput.method=iperf3"
 fi
+if ! command -v ip &>/dev/null; then
+    warn "  ⚠  'ip' (iproute2) not found — gateway detection will be disabled"
+fi
 
 if [ ${#MISSING[@]} -gt 0 ]; then
     echo
     warn "Missing required packages: ${MISSING[*]}"
-    echo -e "Install with:\n  sudo apt update && sudo apt install -y python3 python3-pip python3-venv conky curl iputils-ping"
+    echo -e "Install with:\n  sudo apt update && sudo apt install -y python3 python3-pip python3-venv conky-all curl iputils-ping dnsutils iproute2"
     die "Please install missing packages and re-run install.sh"
 fi
 

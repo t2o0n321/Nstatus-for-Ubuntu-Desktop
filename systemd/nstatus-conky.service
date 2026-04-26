@@ -1,26 +1,23 @@
 [Unit]
 Description=NStatus Conky Widget
 Documentation=https://github.com/t2o0n321/nstatus-for-ubuntu-desktop
-# Require the data daemon to be running first
 After=nstatus.service graphical-session.target
 Requires=nstatus.service
-# Re-start if the display disappears (e.g. screen lock / DPMS)
 PartOf=graphical-session.target
 
 [Service]
 Type=simple
 ExecStart=/usr/bin/conky --config=%h/.config/nstatus/conky/nstatus.conf
 
-# Give Conky 2 s to start writing before the widget appears
-ExecStartPre=/bin/sleep 2
+# Give the daemon time to write the first state file before Conky starts.
+ExecStartPre=/bin/sleep 3
 
 Restart=on-failure
 RestartSec=5
 
-# Conky needs the DISPLAY and DBUS_SESSION_BUS_ADDRESS variables.
-# These are inherited from the user session automatically when the
-# service is started by systemd --user (not system systemd).
-Environment=DISPLAY=:0
+# Do NOT hard-code DISPLAY or WAYLAND_DISPLAY here.
+# systemd --user inherits the correct display server variables from the
+# login session automatically (via PAM / dbus-update-activation-environment).
 
 StandardOutput=journal
 StandardError=journal
