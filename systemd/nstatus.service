@@ -1,0 +1,32 @@
+[Unit]
+Description=NStatus Network Monitor Daemon
+Documentation=https://github.com/t2o0n321/nstatus-for-ubuntu-desktop
+# Start after the network is available
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Populated by install.sh — do not edit directly; run install.sh instead.
+ExecStart=%h/.local/share/nstatus/venv/bin/python %h/.config/nstatus/src/main.py
+
+# Environment — override config file location here if needed.
+Environment=NSTATUS_CONFIG=%h/.config/nstatus/config.yaml
+
+# Restart policy: restart up to 5 times within 60 seconds before giving up
+Restart=on-failure
+RestartSec=10
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# Working directory
+WorkingDirectory=%h/.config/nstatus
+
+# Logging goes through journald (use: journalctl --user -u nstatus -f)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nstatus
+
+[Install]
+WantedBy=default.target

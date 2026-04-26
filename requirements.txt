@@ -1,0 +1,13 @@
+# NStatus Python dependencies
+# Install via:  pip install -r requirements.txt
+# Or let install.sh handle it automatically.
+
+# YAML config file parsing
+pyyaml>=6.0
+
+# Throughput testing (speedtest backend)
+speedtest-cli>=2.1.3
+
+# iperf3 Python bindings (optional — only needed if throughput.method = iperf3)
+# Uncomment the line below if you prefer the Python binding over the CLI tool:
+# iperf3>=0.1.11
