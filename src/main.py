@@ -22,6 +22,7 @@ import logging.handlers
 import os
 import signal
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
@@ -206,14 +207,43 @@ class NStatusDaemon:
             await asyncio.sleep(300)
 
     async def _cleanup_loop(self) -> None:
-        logger.info("cleanup_loop started (interval=86400s)")
+        cfg = self._cfg
+        interval_s = cfg.retention_cleanup_interval_hours * 3600
+        vacuum_every_s = cfg.retention_vacuum_interval_days * 86_400
+        logger.info(
+            "cleanup_loop started (interval=%.1fh, vacuum_every=%dd)",
+            cfg.retention_cleanup_interval_hours,
+            cfg.retention_vacuum_interval_days,
+        )
+        _last_vacuum = 0.0
+
         while self._running:
             try:
-                self._db.cleanup_old_records(days=30)
-                logger.info("DB cleanup complete")
+                self._db.cleanup_old_records(
+                    fast_hours=cfg.retention_fast_hours,
+                    dns_hours=cfg.retention_dns_hours,
+                    cloudflare_days=cfg.retention_cloudflare_days,
+                    slow_days=cfg.retention_slow_days,
+                    ip_history_days=cfg.retention_ip_history_days,
+                    max_fast_rows=cfg.retention_max_fast_rows,
+                    max_dns_rows=cfg.retention_max_dns_rows,
+                    max_cloudflare_rows=cfg.retention_max_cloudflare_rows,
+                    max_slow_rows=cfg.retention_max_slow_rows,
+                )
             except Exception as exc:
                 logger.error("cleanup_loop error: %s", exc)
-            await asyncio.sleep(86_400)
+
+            # VACUUM is run in a separate try block so a vacuum failure
+            # does not prevent the next cleanup from running.
+            now = time.monotonic()
+            if now - _last_vacuum >= vacuum_every_s:
+                try:
+                    self._db.vacuum()
+                    _last_vacuum = now
+                except Exception as exc:
+                    logger.error("DB vacuum error: %s", exc)
+
+            await asyncio.sleep(interval_s)
 
     # ---------------------------------------------------------------- #
     # Collection tasks                                                   #

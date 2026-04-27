@@ -282,17 +282,104 @@ class Database:
     # Maintenance                                                          #
     # ------------------------------------------------------------------ #
 
-    def cleanup_old_records(self, days: int = 30) -> None:
-        cutoff = (
-            datetime.now(timezone.utc) - timedelta(days=days)
-        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    def cleanup_old_records(
+        self,
+        *,
+        fast_hours: int = 48,
+        dns_hours: int = 48,
+        cloudflare_days: int = 7,
+        slow_days: int = 90,
+        ip_history_days: int = 365,
+        max_fast_rows: int = 20000,
+        max_dns_rows: int = 20000,
+        max_cloudflare_rows: int = 15000,
+        max_slow_rows: int = 500,
+    ) -> None:
+        """
+        Per-table time-based cleanup followed by hard row-count caps.
+
+        Retention windows are chosen so that:
+        - metrics_fast / metrics_dns: 48 h covers the 1 h and 24 h avg windows
+          used by history_loop, with plenty of headroom.
+        - metrics_cloudflare: 7 days for meaningful uptime %
+        - metrics_slow: 90 days for throughput trend visibility
+        - ip_history: 365 days for reliable DYNAMIC/LIKELY_STATIC heuristic
+        """
+        now = datetime.now(timezone.utc)
+
+        def _cutoff(hours: float = 0, days: float = 0) -> str:
+            return (now - timedelta(hours=hours, days=days)).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+
+        deleted: dict = {}
+
         with self._conn() as conn:
-            conn.execute("DELETE FROM metrics_fast        WHERE timestamp   < ?", (cutoff,))
-            conn.execute("DELETE FROM metrics_slow        WHERE timestamp   < ?", (cutoff,))
-            conn.execute("DELETE FROM metrics_dns         WHERE timestamp   < ?", (cutoff,))
-            conn.execute("DELETE FROM metrics_cloudflare  WHERE timestamp   < ?", (cutoff,))
-            conn.execute("DELETE FROM ip_history          WHERE detected_at < ?", (cutoff,))
-        logger.debug("Cleaned up records older than %d days", days)
+            # ── Time-based deletions ──────────────────────────────── #
+            r = conn.execute(
+                "DELETE FROM metrics_fast WHERE timestamp < ?",
+                (_cutoff(hours=fast_hours),),
+            )
+            deleted["fast_time"] = r.rowcount
+
+            r = conn.execute(
+                "DELETE FROM metrics_dns WHERE timestamp < ?",
+                (_cutoff(hours=dns_hours),),
+            )
+            deleted["dns_time"] = r.rowcount
+
+            r = conn.execute(
+                "DELETE FROM metrics_cloudflare WHERE timestamp < ?",
+                (_cutoff(days=cloudflare_days),),
+            )
+            deleted["cf_time"] = r.rowcount
+
+            r = conn.execute(
+                "DELETE FROM metrics_slow WHERE timestamp < ?",
+                (_cutoff(days=slow_days),),
+            )
+            deleted["slow_time"] = r.rowcount
+
+            r = conn.execute(
+                "DELETE FROM ip_history WHERE detected_at < ?",
+                (_cutoff(days=ip_history_days),),
+            )
+            deleted["ip_time"] = r.rowcount
+
+            # ── Row-count caps (keep the N most-recent rows) ──────── #
+            for table, ts_col, cap, label in [
+                ("metrics_fast",       "timestamp",   max_fast_rows,       "fast_cap"),
+                ("metrics_dns",        "timestamp",   max_dns_rows,        "dns_cap"),
+                ("metrics_cloudflare", "timestamp",   max_cloudflare_rows, "cf_cap"),
+                ("metrics_slow",       "timestamp",   max_slow_rows,       "slow_cap"),
+            ]:
+                r = conn.execute(
+                    f"DELETE FROM {table} WHERE id NOT IN ("
+                    f"  SELECT id FROM {table} ORDER BY {ts_col} DESC LIMIT ?"
+                    f")",
+                    (cap,),
+                )
+                deleted[label] = r.rowcount
+
+        total = sum(deleted.values())
+        if total:
+            logger.info(
+                "DB cleanup removed %d rows: %s",
+                total,
+                "  ".join(f"{k}={v}" for k, v in deleted.items() if v),
+            )
+        else:
+            logger.debug("DB cleanup: nothing to remove")
+
+    def vacuum(self) -> None:
+        """Run VACUUM to reclaim free pages and compact the database file."""
+        conn = sqlite3.connect(self._path, timeout=30)
+        try:
+            conn.execute("VACUUM")
+            conn.commit()
+        finally:
+            conn.close()
+        logger.info("DB VACUUM complete")
 
     # ------------------------------------------------------------------ #
     # Cloudflare metrics                                                   #

@@ -64,3 +64,24 @@ cloudflare:
 
   # Maximum seconds to wait for a single HTTP response
   timeout_seconds: 10
+
+# ── Data retention ──────────────────────────────────────────────────────────
+# Controls how long each table keeps data and enforces hard row-count caps.
+# Cleanup runs every cleanup_interval_hours; VACUUM runs every vacuum_interval_days.
+retention:
+  # Time-based windows (keep data younger than these thresholds)
+  fast_hours:        48    # metrics_fast  — covers 1 h + 24 h avg windows
+  dns_hours:         48    # metrics_dns
+  cloudflare_days:    7    # metrics_cloudflare — 7 d uptime percentage
+  slow_days:         90    # metrics_slow (throughput history)
+  ip_history_days:  365    # ip_history   — long window for IP-type heuristic
+
+  # Hard row-count caps (oldest rows removed if table exceeds this size)
+  max_fast_rows:       20000
+  max_dns_rows:        20000
+  max_cloudflare_rows: 15000
+  max_slow_rows:         500
+
+  # Cleanup schedule
+  cleanup_interval_hours: 1     # how often cleanup runs (supports decimals, e.g. 0.5)
+  vacuum_interval_days:   7     # how often SQLite VACUUM reclaims free pages

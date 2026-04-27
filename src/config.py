@@ -48,6 +48,23 @@ _DEFAULTS: dict = {
         "check_interval_seconds": 60,
         "timeout_seconds": 10,
     },
+    "retention": {
+        # Per-table time-based retention
+        "fast_hours":        48,    # metrics_fast  — 48 h covers 1 h + 24 h avg windows
+        "dns_hours":         48,    # metrics_dns
+        "cloudflare_days":    7,    # metrics_cloudflare
+        "slow_days":         90,    # metrics_slow (throughput tests)
+        "ip_history_days":  365,    # ip_history    — long window for IP-type heuristic
+        # Hard row-count caps (applied after time-based cleanup)
+        "max_fast_rows":    20000,
+        "max_dns_rows":     20000,
+        "max_cloudflare_rows": 15000,
+        "max_slow_rows":     500,
+        # How often to run cleanup (hours); use fractional hours (e.g. 0.5 = 30 min)
+        "cleanup_interval_hours": 1,
+        # Run VACUUM every this many days to reclaim freed pages
+        "vacuum_interval_days":   7,
+    },
 }
 
 
@@ -187,3 +204,51 @@ class Config:
     @property
     def cloudflare_timeout(self) -> int:
         return int(self.get("cloudflare", "timeout_seconds", default=10))
+
+    # ------------------------------------------------------------------ #
+    # Retention                                                            #
+    # ------------------------------------------------------------------ #
+
+    @property
+    def retention_fast_hours(self) -> int:
+        return int(self.get("retention", "fast_hours", default=48))
+
+    @property
+    def retention_dns_hours(self) -> int:
+        return int(self.get("retention", "dns_hours", default=48))
+
+    @property
+    def retention_cloudflare_days(self) -> int:
+        return int(self.get("retention", "cloudflare_days", default=7))
+
+    @property
+    def retention_slow_days(self) -> int:
+        return int(self.get("retention", "slow_days", default=90))
+
+    @property
+    def retention_ip_history_days(self) -> int:
+        return int(self.get("retention", "ip_history_days", default=365))
+
+    @property
+    def retention_max_fast_rows(self) -> int:
+        return int(self.get("retention", "max_fast_rows", default=20000))
+
+    @property
+    def retention_max_dns_rows(self) -> int:
+        return int(self.get("retention", "max_dns_rows", default=20000))
+
+    @property
+    def retention_max_cloudflare_rows(self) -> int:
+        return int(self.get("retention", "max_cloudflare_rows", default=15000))
+
+    @property
+    def retention_max_slow_rows(self) -> int:
+        return int(self.get("retention", "max_slow_rows", default=500))
+
+    @property
+    def retention_cleanup_interval_hours(self) -> float:
+        return float(self.get("retention", "cleanup_interval_hours", default=1))
+
+    @property
+    def retention_vacuum_interval_days(self) -> int:
+        return int(self.get("retention", "vacuum_interval_days", default=7))
