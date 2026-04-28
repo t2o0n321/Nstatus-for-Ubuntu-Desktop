@@ -4,6 +4,9 @@ Documentation=https://github.com/t2o0n321/nstatus-for-ubuntu-desktop
 # Start after the network is available
 After=network-online.target
 Wants=network-online.target
+# Restart policy limits (must live in [Unit] for user services)
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -13,12 +16,12 @@ ExecStart=%h/.local/share/nstatus/venv/bin/python %h/.config/nstatus/src/main.py
 
 # Environment — override config file location here if needed.
 Environment=NSTATUS_CONFIG=%h/.config/nstatus/config.yaml
+# Include venv bin in PATH so subprocess calls (e.g. speedtest-cli) are found.
+Environment=PATH=%h/.local/share/nstatus/venv/bin:/usr/local/bin:/usr/bin:/bin
 
-# Restart policy: restart up to 5 times within 60 seconds before giving up
+# Restart policy
 Restart=on-failure
 RestartSec=10
-StartLimitIntervalSec=60
-StartLimitBurst=5
 
 # Working directory
 WorkingDirectory=%h/.config/nstatus

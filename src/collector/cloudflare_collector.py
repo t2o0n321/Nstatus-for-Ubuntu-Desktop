@@ -75,6 +75,7 @@ _CF_RAY_RE    = re.compile(r"^CF-Ray:\s*([A-Za-z0-9]+-([A-Z]{3}))",  re.IGNORECA
 _CF_CACHE_RE  = re.compile(r"^CF-Cache-Status:\s*(\S+)",              re.IGNORECASE | re.MULTILINE)
 _SERVER_RE    = re.compile(r"^Server:\s*(\S+)",                       re.IGNORECASE | re.MULTILINE)
 _STATUS_RE    = re.compile(r"^HTTP/[\d.]+ (\d{3})",                   re.MULTILINE)
+_CODE_RE      = re.compile(r"NSTATUS_CODE:(\d+)")
 
 
 # ------------------------------------------------------------------ #
@@ -199,13 +200,18 @@ async def probe_endpoint(
         header_block = raw[:idx]
         timing_line  = raw[idx:].rstrip()
 
-    timing = _parse_timing(timing_line)
-
-    # HTTP status: prefer the write-out value (handles redirects correctly)
-    http_status = int(timing.get("NSTATUS_CODE", 0))
+    # HTTP status: parse directly from write-out string as an integer.
+    # Do NOT use _parse_timing() for this — that function multiplies all
+    # values by 1000 (seconds→ms), which would turn 200 into 200000.
+    http_status = 0
+    code_m = _CODE_RE.search(timing_line)
+    if code_m:
+        http_status = int(code_m.group(1))
     if not http_status:
         status_lines = _STATUS_RE.findall(header_block)
         http_status  = int(status_lines[-1]) if status_lines else 0
+
+    timing = _parse_timing(timing_line)
 
     # Cloudflare detection
     server_m  = _SERVER_RE.search(header_block)
