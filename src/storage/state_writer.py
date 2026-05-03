@@ -196,15 +196,15 @@ def format_conky_text(state: Dict[str, Any]) -> str:  # noqa: C901
         "",
         "",
         # Quality score — prominently at the top
-        f"{_c(D)}Quality  {_c(q_color)}{q_label}"
+        f"  {_c(D)}Quality       {_c(q_color)}{q_label}"
         + (f"  {_c(D)}({q_score}/100)" if q_score is not None else ""),
-        f"{_c(D)}Updated  {_c(W)}{ts}",
-        f"{_c(D)}Target   {_c(DM)}{target}",
+        f"  {_c(D)}Updated       {_c(W)}{ts}",
+        f"  {_c(D)}Target        {_c(DM)}{target}",
         "",
         # ── QoS ───────────────────────────────────────── #
         _section("QoS Metrics") + "─" * 13,
-        f"  {_c(D)}Latency (avg)  {_c(rtt_c)}{_f(rtt, 1, ' ms')}",
-        f"  {_c(D)}  min/max      {_c(DM)}{_f(rtt_min, 1)}  /  {_f(rtt_max, 1, ' ms')}",
+        f"  {_c(D)}Latency (avg) {_c(rtt_c)}{_f(rtt, 1, ' ms')}",
+        f"  {_c(D)}  min/max     {_c(DM)}{_f(rtt_min, 1)}  /  {_f(rtt_max, 1, ' ms')}",
         f"  {_c(D)}Jitter        {_c(jitter_c)}{_f(jitter, 1, ' ms')}",
         f"  {_c(D)}Packet Loss   {_c(loss_c)}{_f(loss, 1, '%')}",
         f"  {_c(D)}DNS Latency   {_c(dns_c)}{_f(dns_ms, 0, ' ms')}"
@@ -238,7 +238,7 @@ def format_conky_text(state: Dict[str, Any]) -> str:  # noqa: C901
         f"  {_c(D)}Location      {_c(DM)}{location}",
         f"  {_c(D)}IPv6          {ipv6_str}",
         f"  {_c(D)}IP Type       {_c(ip_type_color)}{ip_type}",
-        f"  {_c(DM)}{ip_type_reason}",
+        f"{' ' * 16}{_c(DM)}{ip_type_reason}",
         f"  {_c(D)}IP Changed    {_c(DM)}{last_change}",
         "",
     ]
@@ -346,9 +346,9 @@ def format_simple_conky_text(state: Dict[str, Any]) -> str:
         f"  {_c(H)}╚{'═' * 26}╝",
         "",
         "",
-        f"{_c(D)}Quality  {_c(q_color)}{q_label}"
+        f"  {_c(D)}Quality       {_c(q_color)}{q_label}"
         + (f"  {_c(D)}({q_score}/100)" if q_score is not None else ""),
-        f"{_c(D)}Updated  {_c(W)}{ts}",
+        f"  {_c(D)}Updated       {_c(W)}{ts}",
         "",
         f"  {_c(D)}Public IP     {_c(W)}{pub_ip}",
         f"  {_c(D)}IP Type       {_c(ip_type_color)}{ip_type}",

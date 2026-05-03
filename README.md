@@ -585,11 +585,11 @@ cp src/main.py                  ~/.config/nstatus/src/main.py
 cp src/toggle_button.py         ~/.config/nstatus/src/toggle_button.py
 # ... and so on for whichever file you changed
 
-# Restart the daemon to reload
+# Always restart the daemon — it caches the module in memory and will
+# overwrite conky_data.txt with the old format on the next cycle otherwise.
 systemctl --user restart nstatus.service
 
-# Or, if you only changed state_writer.py and want to see the result immediately
-# without waiting for the next daemon cycle:
+# Optionally force an immediate redraw without waiting for the next cycle:
 bash ~/.config/nstatus/scripts/regen_conky.sh
 ```
 
