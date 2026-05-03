@@ -9,6 +9,8 @@ from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
 
+SIMPLE_MODE_FLAG = Path.home() / ".local/share" / "nstatus" / "simple_mode"
+
 
 # ------------------------------------------------------------------ #
 # Atomic write helper                                                  #
@@ -65,6 +67,21 @@ def _f(val: Any, dec: int = 1, unit: str = "") -> str:
     return "N/A"
 
 
+def _wrap_lv(indent: str, label: str, lc: str, vc: str, value: str, max_line: int = 38) -> list:
+    """Format a label-value pair, wrapping value to a continuation line if it is too wide."""
+    avail = max_line - len(indent) - len(label)
+    if len(value) <= avail:
+        return [f"{_c(lc)}{indent}{label}{_c(vc)}{value}"]
+    cut = value.rfind(" ", 0, avail + 1)
+    if cut <= 0:
+        cut = avail
+    cont = " " * (len(indent) + len(label))
+    return [
+        f"{_c(lc)}{indent}{label}{_c(vc)}{value[:cut]}",
+        f"{_c(vc)}{cont}{value[cut + 1:]}",
+    ]
+
+
 # ------------------------------------------------------------------ #
 # Conky display text                                                   #
 # ------------------------------------------------------------------ #
@@ -77,6 +94,13 @@ DM = "#888888"   # medium dim
 
 def _section(title: str) -> str:
     return f"{_c(H)}── {title} "
+
+
+def _mode_button(simple: bool) -> str:
+    """Toggle bar shown under the title box. Active mode is highlighted."""
+    if simple:
+        return f"  {_c('#555555')}[○ Full]  {_c('#00e676')}[● Simple]"
+    return f"  {_c(H)}[● Full]  {_c(D)}[○ Simple]"
 
 
 def format_conky_text(state: Dict[str, Any]) -> str:  # noqa: C901
@@ -166,9 +190,10 @@ def format_conky_text(state: Dict[str, Any]) -> str:  # noqa: C901
     SEP = f"{_c('#333333')}────────────────────────────────"
 
     lines = [
-        f"{_c(H)}╔══════════════════════════════╗",
-        f"{_c(H)}║  {_c('#ffffff')}NStatus Network Monitor{_c(H)}      ║",
-        f"{_c(H)}╚══════════════════════════════╝",
+        f"  {_c(H)}╔{'═' * 26}╗",
+        f"  {_c(H)}║  {_c('#ffffff')}NStatus Network Monitor{_c(H)} ║",
+        f"  {_c(H)}╚{'═' * 26}╝",
+        "",
         "",
         # Quality score — prominently at the top
         f"{_c(D)}Quality  {_c(q_color)}{q_label}"
@@ -208,12 +233,12 @@ def format_conky_text(state: Dict[str, Any]) -> str:  # noqa: C901
         # ── Network Identity ──────────────────────────── #
         _section("Network Identity") + "─" * 9,
         f"  {_c(D)}Public IP     {_c(W)}{pub_ip}",
-        f"  {_c(D)}ISP           {_c(W)}{isp}",
+        *_wrap_lv("  ", "ISP           ", D, W, isp),
         f"  {_c(D)}ASN           {_c(DM)}{asn}",
         f"  {_c(D)}Location      {_c(DM)}{location}",
         f"  {_c(D)}IPv6          {ipv6_str}",
         f"  {_c(D)}IP Type       {_c(ip_type_color)}{ip_type}",
-        f"  {_c(DM)}              {ip_type_reason}",
+        f"  {_c(DM)}{ip_type_reason}",
         f"  {_c(D)}IP Changed    {_c(DM)}{last_change}",
         "",
     ]
@@ -298,6 +323,43 @@ def format_conky_text(state: Dict[str, Any]) -> str:  # noqa: C901
     return "\n".join(lines)
 
 
+def format_simple_conky_text(state: Dict[str, Any]) -> str:
+    """Compact view: Quality, Updated, Public IP, IP Type only."""
+    ts = state.get("updated_at", "---")
+
+    q_score = state.get("quality_score")
+    q_label = state.get("quality_label", "N/A")
+    q_color = state.get("quality_color", "#888888")
+
+    ip_info      = state.get("ip_info", {})
+    pub_ip       = ip_info.get("ip", "N/A")
+    ip_type      = state.get("ip_type", "UNCERTAIN")
+    ip_type_color = {"DYNAMIC": "#ffca28", "LIKELY_STATIC": "#00e676"}.get(
+        ip_type, "#888888"
+    )
+
+    SEP = f"{_c('#333333')}────────────────────────────────"
+
+    lines = [
+        f"  {_c(H)}╔{'═' * 26}╗",
+        f"  {_c(H)}║  {_c('#ffffff')}NStatus Network Monitor{_c(H)} ║",
+        f"  {_c(H)}╚{'═' * 26}╝",
+        "",
+        "",
+        f"{_c(D)}Quality  {_c(q_color)}{q_label}"
+        + (f"  {_c(D)}({q_score}/100)" if q_score is not None else ""),
+        f"{_c(D)}Updated  {_c(W)}{ts}",
+        "",
+        f"  {_c(D)}Public IP     {_c(W)}{pub_ip}",
+        f"  {_c(D)}IP Type       {_c(ip_type_color)}{ip_type}",
+        "",
+        SEP,
+    ]
+    return "\n".join(lines)
+
+
 def write_conky_data(conky_file: Path, state: Dict[str, Any]) -> None:
-    _atomic_write(conky_file, format_conky_text(state))
-    logger.debug("conky_data.txt written")
+    simple = SIMPLE_MODE_FLAG.exists()
+    text   = format_simple_conky_text(state) if simple else format_conky_text(state)
+    _atomic_write(conky_file, text)
+    logger.debug("conky_data.txt written (simple=%s)", simple)

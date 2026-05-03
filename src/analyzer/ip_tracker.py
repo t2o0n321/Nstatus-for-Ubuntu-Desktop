@@ -92,12 +92,12 @@ class IPTracker:
         if n_changes > 0:
             return (
                 "DYNAMIC",
-                f"Changed {n_changes}× in history, now stable {stable_days}d",
+                f"Changed {n_changes}×, stable {stable_days}d now",
             )
 
         return (
             "UNCERTAIN",
-            f"Stable {stable_days}d — need {self._static_days}d for LIKELY_STATIC",
+            f"Stable {stable_days}d, need {self._static_days}d more",
         )
 
     def get_last_change_time(self) -> Optional[datetime]:

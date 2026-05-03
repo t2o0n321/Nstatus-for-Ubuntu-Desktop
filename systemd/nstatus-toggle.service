@@ -1,0 +1,19 @@
+[Unit]
+Description=NStatus Mode Toggle Button
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/.config/nstatus/src/toggle_button.py
+Environment=DISPLAY=:0
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+Restart=on-failure
+RestartSec=5
+WorkingDirectory=%h/.config/nstatus
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nstatus-toggle
+
+[Install]
+WantedBy=graphical-session.target
