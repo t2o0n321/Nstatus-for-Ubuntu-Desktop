@@ -127,7 +127,7 @@ def format_conky_text(state: Dict[str, Any]) -> str:  # noqa: C901
     # ── DNS ──────────────────────────────────────────────────────── #
     dns     = state.get("dns_metrics", {})
     dns_ms  = dns.get("dns_ms")
-    dns_tgt = dns.get("target", "")
+    dns_srv = dns.get("server", "")
     dns_c   = _quality_color(dns_ms, 30, 100)
 
     # ── Gateway ──────────────────────────────────────────────────── #
@@ -215,7 +215,7 @@ def format_conky_text(state: Dict[str, Any]) -> str:  # noqa: C901
         f"  {_c(D)}Jitter        {_c(jitter_c)}{_f(jitter, 1, ' ms')}",
         f"  {_c(D)}Packet Loss   {_c(loss_c)}{_f(loss, 1, '%')}",
         f"  {_c(D)}DNS Latency   {_c(dns_c)}{_f(dns_ms, 0, ' ms')}"
-        + (f"  {_c(DM)}({dns_tgt})" if dns_tgt else ""),
+        + (f"  {_c(DM)}({dns_srv})" if dns_srv else ""),
         "",
         # ── Gateway / LAN ─────────────────────────────── #
         _section("LAN / Gateway") + "─" * 12,

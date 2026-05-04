@@ -297,19 +297,20 @@ class NStatusDaemon:
 
         # DNS latency (runs concurrently with gateway ping)
         dns_target = self._cfg.get("network", "dns_target", default="google.com")
-        dns_server = self._cfg.ping_target  # reuse the ping target as DNS resolver
 
-        dns_ms, gw_info = await asyncio.gather(
-            collect_dns_latency(hostname=dns_target, dns_server="8.8.8.8"),
+        dns_result, gw_info = await asyncio.gather(
+            collect_dns_latency(hostname=dns_target),
             collect_gateway_info(),
             return_exceptions=False,
         )
 
-        if isinstance(dns_ms, float):
-            self._db.record_dns_metric(dns_ms, target=dns_target)
-            self._state["dns_metrics"] = {"dns_ms": dns_ms, "target": dns_target}
-        elif isinstance(dns_ms, Exception):
-            logger.error("DNS collection raised: %s", dns_ms)
+        if isinstance(dns_result, tuple):
+            dns_ms, dns_srv = dns_result
+            if isinstance(dns_ms, float):
+                self._db.record_dns_metric(dns_ms, target=dns_target)
+                self._state["dns_metrics"] = {"dns_ms": dns_ms, "target": dns_target, "server": dns_srv}
+        elif isinstance(dns_result, Exception):
+            logger.error("DNS collection raised: %s", dns_result)
 
         if isinstance(gw_info, dict):
             self._state["gateway_metrics"] = gw_info
