@@ -9,7 +9,7 @@ under XWayland where Cairo ARGB painting fails silently.
 Clicking toggles the simple_mode flag file and immediately regenerates
 conky_data.txt so the display updates within ~2 s.
 """
-import os, subprocess
+import os, re, subprocess
 import gi
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
@@ -23,11 +23,12 @@ FLAG  = Path.home() / ".local/share/nstatus/simple_mode"
 REGEN = Path.home() / ".config/nstatus/scripts/regen_conky.sh"
 
 # ── must match conky/nstatus.conf ──────────────────────────────────────── #
-CONKY_GAP_X  = 20
-CONKY_WIDTH  = 290
-LINE_PX      = 14
-MARGIN_PX    = 6
-BTN_HEIGHT   = LINE_PX + 4
+CONKY_GAP_X           = 20
+CONKY_WIDTH           = 290
+CONKY_BORDER_MARGIN   = 6   # border_inner_margin in nstatus.conf
+LINE_PX               = 14
+MARGIN_PX             = 6
+BTN_HEIGHT            = LINE_PX + 4
 
 # ── colours ────────────────────────────────────────────────────────────── #
 BG_CSS   = "rgba(8, 8, 16, 0.85)"
@@ -48,19 +49,38 @@ label {{
 """.encode()
 
 
-def _conky_window_y() -> int | None:
-    """Return the absolute Y of the top of the Conky window via xwininfo."""
+def _conky_window_pos() -> tuple[int | None, int | None]:
+    """Return (x, y) absolute upper-left of the Conky window.
+
+    Searches by WM class ("conky") so it works regardless of window title.
+    """
     try:
         out = subprocess.check_output(
-            ["xwininfo", "-name", "conky"],
+            ["xwininfo", "-root", "-tree"],
             stderr=subprocess.DEVNULL, text=True
         )
         for line in out.splitlines():
-            if "Absolute upper-left Y:" in line:
-                return int(line.split(":")[1].strip())
+            if '("conky"' in line:
+                m = re.search(r'\d+x\d+\+(-?\d+)\+(-?\d+)', line)
+                if m:
+                    return int(m.group(1)), int(m.group(2))
     except Exception:
         pass
-    return None
+    return None, None
+
+
+def _screen_size() -> tuple[int, int]:
+    """Return (width, height) of the primary monitor via xrandr."""
+    try:
+        out = subprocess.check_output(["xrandr"], stderr=subprocess.DEVNULL, text=True)
+        for line in out.splitlines():
+            if " connected" in line:
+                m = re.search(r'(\d+)x(\d+)\+\d+\+\d+', line)
+                if m:
+                    return int(m.group(1)), int(m.group(2))
+    except Exception:
+        pass
+    return (0, 0)
 
 
 class ToggleButton(Gtk.Window):
@@ -97,6 +117,7 @@ class ToggleButton(Gtk.Window):
 
         self._simple = FLAG.exists()
         self._update_label()
+        self._known_screen = _screen_size()
 
         self.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
         self.connect("button-press-event", self._click)
@@ -108,27 +129,10 @@ class ToggleButton(Gtk.Window):
 
     # ── positioning ────────────────────────────────────────────────────── #
 
-    def _position(self):
-        # X: right-align matching Conky
-        display = Gdk.Display.get_default()
-        monitor = None
-        if display:
-            monitor = display.get_primary_monitor() or display.get_monitor(0)
-        if monitor:
-            geo = monitor.get_geometry()
-            x = geo.x + geo.width - CONKY_GAP_X - CONKY_WIDTH
-        else:
-            x = 1918 - CONKY_GAP_X - CONKY_WIDTH
-
-        # Y: read Conky's actual window top, then skip title box (3 lines + margin)
-        conky_top = _conky_window_y()
-        if conky_top is not None:
-            y = conky_top + MARGIN_PX + 3 * LINE_PX
-        else:
-            # Fallback: use gap_y - 7 (observed offset on this system)
-            y = 43 + MARGIN_PX + 3 * LINE_PX
-
-        self.move(x, y)
+    def _position(self) -> bool:
+        conky_x, conky_y = _conky_window_pos()
+        if conky_x is not None and conky_y is not None:
+            self.move(conky_x + CONKY_BORDER_MARGIN, conky_y + MARGIN_PX + 3 * LINE_PX)
         return False
 
     # ── rendering ──────────────────────────────────────────────────────── #
@@ -160,11 +164,26 @@ class ToggleButton(Gtk.Window):
         self._update_label()
         return True
 
-    def _sync(self):
+    # ── sync ───────────────────────────────────────────────────────────── #
+
+    def _sync(self) -> bool:
+        # Detect resolution change and restart Conky to reposition it.
+        size = _screen_size()
+        if size != (0, 0) and size != self._known_screen:
+            self._known_screen = size
+            subprocess.Popen(
+                ["systemctl", "--user", "restart", "nstatus-conky.service"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            # Give Conky a few seconds to restart before repositioning.
+            GLib.timeout_add(4000, self._position)
+            return True
+
         current = FLAG.exists()
         if current != self._simple:
             self._simple = current
             self._update_label()
+        self._position()
         return True
 
 
