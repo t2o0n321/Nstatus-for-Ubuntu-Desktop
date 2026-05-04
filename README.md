@@ -28,6 +28,7 @@ Target   8.8.8.8
   Gateway IP    192.168.1.1  (eth0)
   LAN Latency   0.4 ms
   LAN Loss      0.0%
+  WAN Type      PPPoE  (MTU 1492)
 
 ── Throughput ───────────────
   Download      94.2 Mbps
@@ -74,12 +75,12 @@ Clicking `[● Full]` / `[○ Simple]` switches to a minimal view showing only Q
 │  │gateway_      │     │→ DL/UL Mbps      │  │                   │   │
 │  │collector     │     └──────────────────┘  │ipv6 check         │   │
 │  │→ RTT/jitter  │                           └───────────────────┘   │
-│  │  loss/DNS/GW │     cloudflare_loop (60 s)                        │
-│  └──────┬───────┘     ┌──────────────────┐                          │
-│         │             │cloudflare_       │                          │
-│         │             │collector         │                          │
-│         │             │→ status/TTFB/PoP │                          │
-│         │             └──────────────────┘                          │
+│  │  loss/DNS/GW │     cloudflare_loop (60 s)  wan_loop (30 min)     │
+│  └──────┬───────┘     ┌──────────────────┐  ┌───────────────────┐   │
+│         │             │cloudflare_       │  │wan_type_collector │   │
+│         │             │collector         │  │→ tracepath PMTU   │   │
+│         │             │→ status/TTFB/PoP │  │  PPPoE / IPoE     │   │
+│         │             └──────────────────┘  └───────────────────┘   │
 │         └─────────────────────┬───────────────────────────────      │
 │                               │                                     │
 │                    ┌──────────▼──────────┐                          │
@@ -121,6 +122,7 @@ Clicking `[● Full]` / `[○ Simple]` switches to a minimal view showing only Q
 | `src/collector/ip_collector.py` | `curl ipinfo.io` (with ip-api.com fallback) |
 | `src/collector/throughput_collector.py` | `speedtest-cli --json` or `iperf3 -J` |
 | `src/collector/cloudflare_collector.py` | HTTP probe of Cloudflare-served endpoints |
+| `src/collector/wan_type_collector.py` | WAN type detection via `tracepath` Path-MTU (PPPoE / IPoE) |
 | `src/analyzer/stats.py` | RTT avg/min/max, jitter (RFC 3550), std-dev |
 | `src/analyzer/ip_tracker.py` | IP-type heuristic using SQLite history |
 | `src/analyzer/quality_score.py` | Composite 0–100 quality score |
@@ -145,7 +147,8 @@ nstatus/
 │   │   ├── gateway_collector.py
 │   │   ├── ip_collector.py
 │   │   ├── throughput_collector.py
-│   │   └── cloudflare_collector.py
+│   │   ├── cloudflare_collector.py
+│   │   └── wan_type_collector.py
 │   ├── analyzer/
 │   │   ├── stats.py
 │   │   ├── ip_tracker.py
@@ -316,6 +319,19 @@ ip_tracking:
 | Current IP stable ≥ 7 days | **LIKELY_STATIC** |
 | Stable but below threshold | **DYNAMIC** (conservative) |
 | Insufficient history | **UNCERTAIN** |
+
+### WAN type detection
+
+No configuration needed — the daemon runs `tracepath` automatically.
+
+| Display | Meaning |
+|---|---|
+| `PPPoE  (MTU 1492)` | Path MTU dropped to 1492 at the gateway — 8-byte PPPoE/PPP overhead |
+| `IPoE   (MTU 1500)` | Path MTU stayed at 1500 throughout — standard Ethernet |
+| `Checking…` | First `tracepath` run not yet complete (takes up to ~20 s on startup) |
+| `UNKNOWN` | `tracepath` timed out, returned no PMTU data, or is not installed |
+
+The check runs once on startup then every **30 minutes** — WAN type almost never changes mid-session.  Requires `tracepath` from the `iputils-tracepath` package (usually already present via `iputils-ping`).
 
 ### Cloudflare monitoring
 
@@ -558,6 +574,22 @@ systemctl --user restart nstatus.service
 ### Conky window appears on top of other windows
 
 `own_window_type = 'desktop'` and `own_window_hints = 'undecorated,below,...'` are set by default and should keep it behind all normal windows.  If a compositor (Picom, KWin) ignores these hints, add `below` explicitly to the WM rules for the `conky` class.
+
+### WAN Type shows "Checking…" or "UNKNOWN"
+
+`Checking…` is normal for the first ~20 seconds after daemon start while `tracepath` runs.  
+If it stays `UNKNOWN`:
+
+```bash
+# Is tracepath installed?
+which tracepath || sudo apt install iputils-tracepath
+
+# Test manually — look for a "pmtu 1492" or "pmtu 1500" line:
+tracepath -n -m 8 8.8.8.8
+
+# Check daemon log for wan_type errors:
+journalctl --user -u nstatus --since "5 minutes ago" | grep wan
+```
 
 ### Debug logging
 

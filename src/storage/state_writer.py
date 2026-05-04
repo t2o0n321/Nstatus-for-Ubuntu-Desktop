@@ -138,6 +138,13 @@ def format_conky_text(state: Dict[str, Any]) -> str:  # noqa: C901
     gw_loss  = gw.get("packet_loss")
     gw_c     = _quality_color(gw_rtt, 5, 20)
 
+    # ── WAN type ─────────────────────────────────────────────────── #
+    wan      = state.get("wan_info", {})
+    wan_type = wan.get("wan_type", "")
+    wan_mtu  = wan.get("wan_mtu")
+    wan_c    = {"PPPoE": "#ffca28", "IPoE": "#00e676"}.get(wan_type, "#888888")
+    wan_mtu_str = f"  {_c(DM)}(MTU {wan_mtu})" if wan_mtu else ""
+
     # ── Throughput ────────────────────────────────────────────────── #
     sm          = state.get("slow_metrics", {})
     dl          = sm.get("download_mbps")
@@ -216,6 +223,7 @@ def format_conky_text(state: Dict[str, Any]) -> str:  # noqa: C901
         + (f"  {_c(DM)}({gw_iface})" if gw_iface else ""),
         f"  {_c(D)}LAN Latency   {_c(gw_c)}{_f(gw_rtt, 1, ' ms')}",
         f"  {_c(D)}LAN Loss      {_c(_quality_color(gw_loss, 0.5, 2))}{_f(gw_loss, 1, '%')}",
+        f"  {_c(D)}WAN Type      {_c(wan_c)}{wan_type or 'Checking…'}{wan_mtu_str}",
         "",
         # ── Throughput ────────────────────────────────── #
         _section("Throughput") + "─" * 15,

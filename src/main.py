@@ -7,6 +7,7 @@ Async loops
   fast_loop       — ping QoS + DNS latency + gateway latency  (fast_interval s)
   slow_loop       — throughput test                            (slow_interval s)
   ip_loop         — public IP + ISP + IPv6 check              (ip_check_interval s)
+  wan_loop        — WAN type detection via tracepath PMTU      (30 min)
   cloudflare_loop — probe Cloudflare-served endpoints         (cf_check_interval s)
   history_loop    — pull 1 h / 24 h averages from SQLite      (5 min)
   cleanup_loop    — prune old DB records                       (24 h)
@@ -38,6 +39,7 @@ from src.collector.throughput_collector import collect_throughput
 from src.collector.dns_collector import collect_dns_latency
 from src.collector.gateway_collector import collect_gateway_info, collect_ipv6_status
 from src.collector.cloudflare_collector import probe_all_endpoints
+from src.collector.wan_type_collector import collect_wan_type
 from src.analyzer.stats import compute_ping_stats
 from src.analyzer.ip_tracker import IPTracker
 from src.analyzer.quality_score import compute_quality_score, score_label, score_color
@@ -105,6 +107,7 @@ _INITIAL_STATE: Dict[str, Any] = {
     "quality_label":        "N/A",
     "quality_color":        "#888888",
     "cloudflare_endpoints": [],   # list of probe result dicts
+    "wan_info":             {},   # wan_type / wan_mtu / method
 }
 
 
@@ -174,6 +177,16 @@ class NStatusDaemon:
             except Exception as exc:
                 logger.error("ip_loop error: %s", exc, exc_info=True)
             await asyncio.sleep(interval)
+
+    async def _wan_loop(self) -> None:
+        """Detect WAN type via tracepath PMTU — run once then every 30 min."""
+        logger.info("wan_loop started   (interval=1800s)")
+        while self._running:
+            try:
+                await self._collect_wan()
+            except Exception as exc:
+                logger.error("wan_loop error: %s", exc, exc_info=True)
+            await asyncio.sleep(1800)
 
     async def _cloudflare_loop(self) -> None:
         """Probe all Cloudflare endpoints at cf_check_interval seconds."""
@@ -366,6 +379,13 @@ class NStatusDaemon:
         self._flush()
         logger.debug("ip ← %s  type=%s", ip_info["ip"], ip_type)
 
+    async def _collect_wan(self) -> None:
+        result = await collect_wan_type()
+        self._state["wan_info"] = result
+        self._flush()
+        logger.debug("wan ← type=%s  mtu=%s  method=%s",
+                     result.get("wan_type"), result.get("wan_mtu"), result.get("method"))
+
     async def _collect_cloudflare(self) -> None:
         endpoints = self._cfg.cloudflare_endpoints
         timeout   = self._cfg.cloudflare_timeout
@@ -436,6 +456,7 @@ class NStatusDaemon:
             asyncio.create_task(self._fast_loop(),       name="fast_loop"),
             asyncio.create_task(self._slow_loop(),       name="slow_loop"),
             asyncio.create_task(self._ip_loop(),         name="ip_loop"),
+            asyncio.create_task(self._wan_loop(),        name="wan_loop"),
             asyncio.create_task(self._cloudflare_loop(), name="cloudflare_loop"),
             asyncio.create_task(self._history_loop(),    name="history_loop"),
             asyncio.create_task(self._cleanup_loop(),    name="cleanup_loop"),
