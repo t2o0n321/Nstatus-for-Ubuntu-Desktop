@@ -159,10 +159,12 @@ nstatus/
 ├── config/
 │   └── config.yaml               # annotated default config
 ├── conky/
-│   └── nstatus.conf              # Conky widget config
+│   ├── nstatus.conf              # Conky widget config
+│   └── nstatus_hooks.lua         # Lua hooks for Conky
 ├── scripts/
 │   ├── install.sh
 │   ├── uninstall.sh
+│   ├── restart.sh                # restart daemon / Conky / toggle button
 │   ├── regen_conky.sh            # force-regenerate conky_data.txt
 │   ├── pppoe/
 │   │   ├── pppoe.conf            # edit with your ISP credentials
@@ -251,7 +253,7 @@ X-GNOME-Autostart-enabled=true
 EOF
 
 # Start it now without logging out
-GDK_BACKEND=x11 DISPLAY=:0 nohup python3 ~/.config/nstatus/src/toggle_button.py &
+bash ~/Nstatus-for-Ubuntu-Desktop/scripts/restart.sh button
 ```
 
 > **Wayland note:** The toggle button requires `GDK_BACKEND=x11` to force XWayland.  
@@ -279,9 +281,8 @@ gap_y     = 50,            -- vertical gap from screen edge (px)
 Then restart Conky and the toggle button together (so the button re-reads Conky's window position):
 
 ```bash
-systemctl --user restart nstatus-conky.service
-pkill -f toggle_button.py
-GDK_BACKEND=x11 DISPLAY=:0 nohup python3 ~/.config/nstatus/src/toggle_button.py &
+bash ~/Nstatus-for-Ubuntu-Desktop/scripts/restart.sh conky
+bash ~/Nstatus-for-Ubuntu-Desktop/scripts/restart.sh button
 ```
 
 ---
@@ -423,10 +424,8 @@ journalctl --user -u nstatus-conky -f
 # Restart after config change
 systemctl --user restart nstatus.service
 
-# Restart everything
-systemctl --user restart nstatus.service nstatus-conky.service
-pkill -f toggle_button.py
-GDK_BACKEND=x11 DISPLAY=:0 nohup python3 ~/.config/nstatus/src/toggle_button.py &
+# Restart everything (auto-detects DISPLAY + XAUTHORITY)
+bash ~/Nstatus-for-Ubuntu-Desktop/scripts/restart.sh
 
 # Stop everything
 systemctl --user stop nstatus.service nstatus-conky.service
@@ -537,8 +536,7 @@ python3 -c "import gi; gi.require_version('Gtk','3.0'); from gi.repository impor
 The button reads Conky's actual window position from `xwininfo` at startup and positions itself just below the title box.  If you change `gap_x`, `gap_y`, or `alignment` in `nstatus.conf`, restart the toggle button so it repositions:
 
 ```bash
-pkill -f toggle_button.py
-GDK_BACKEND=x11 DISPLAY=:0 nohup python3 ~/.config/nstatus/src/toggle_button.py &
+bash ~/Nstatus-for-Ubuntu-Desktop/scripts/restart.sh button
 ```
 
 ### Widget shows stale data / "NStatus daemon not running"
@@ -635,10 +633,8 @@ bash ~/.config/nstatus/scripts/regen_conky.sh
 
 ```bash
 cp conky/nstatus.conf ~/.config/nstatus/conky/nstatus.conf
-systemctl --user restart nstatus-conky.service
-# Also restart the toggle button so it re-reads Conky's window position:
-pkill -f toggle_button.py
-GDK_BACKEND=x11 DISPLAY=:0 nohup python3 ~/.config/nstatus/src/toggle_button.py &
+bash ~/Nstatus-for-Ubuntu-Desktop/scripts/restart.sh conky
+bash ~/Nstatus-for-Ubuntu-Desktop/scripts/restart.sh button
 ```
 
 ### Config file (`config/config.yaml`)
@@ -655,8 +651,7 @@ systemctl --user restart nstatus.service
 
 ```bash
 cp src/toggle_button.py ~/.config/nstatus/src/toggle_button.py
-pkill -f toggle_button.py
-GDK_BACKEND=x11 DISPLAY=:0 nohup python3 ~/.config/nstatus/src/toggle_button.py &
+bash ~/Nstatus-for-Ubuntu-Desktop/scripts/restart.sh button
 ```
 
 ---
