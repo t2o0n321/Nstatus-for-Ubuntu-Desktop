@@ -8,8 +8,8 @@ from typing import Dict, Optional
 logger = logging.getLogger(__name__)
 
 _ENDPOINTS = [
-    "https://ipinfo.io/json",   # primary — rich metadata
-    "https://ip-api.com/json",  # fallback — different schema
+    "http://ip-api.com/json",   # primary — dedicated isp field, consumer brand name
+    "https://ipinfo.io/json",   # fallback — uses ASN org name instead
 ]
 
 
@@ -97,16 +97,16 @@ async def collect_ip_info(timeout: int = 15) -> Optional[Dict[str, str]]:
     Returns None only if both endpoints fail.
     """
     data = await _fetch(_ENDPOINTS[0], timeout)
-    if data and data.get("ip"):
-        logger.debug("IP info from ipinfo.io: %s", data.get("ip"))
-        return _parse_ipinfo(data)
-
-    logger.info("ipinfo.io failed, trying ip-api.com")
-
-    data = await _fetch(_ENDPOINTS[1], timeout)
     if data and data.get("status") == "success":
         logger.debug("IP info from ip-api.com: %s", data.get("query"))
         return _parse_ipapi(data)
+
+    logger.info("ip-api.com failed, trying ipinfo.io")
+
+    data = await _fetch(_ENDPOINTS[1], timeout)
+    if data and data.get("ip"):
+        logger.debug("IP info from ipinfo.io: %s", data.get("ip"))
+        return _parse_ipinfo(data)
 
     logger.warning("All IP-info endpoints failed")
     return None
