@@ -163,7 +163,13 @@ nstatus/
 ├── scripts/
 │   ├── install.sh
 │   ├── uninstall.sh
-│   └── regen_conky.sh            # force-regenerate conky_data.txt
+│   ├── regen_conky.sh            # force-regenerate conky_data.txt
+│   ├── pppoe/
+│   │   ├── pppoe.conf            # edit with your ISP credentials
+│   │   └── pppoe_reconfigure.sh  # double-click to apply PPPoE settings
+│   └── ipoe/
+│       ├── ipoe.conf             # edit with your IP / interface settings
+│       └── ipoe_reconfigure.sh   # double-click to apply IPoE settings
 ├── systemd/
 │   ├── nstatus.service           # daemon
 │   ├── nstatus-conky.service     # Conky widget
@@ -664,6 +670,88 @@ Adding a new metric requires three small changes:
 3. **Display** — render `state["my_metrics"]` in `format_conky_text()` in `src/storage/state_writer.py`
 
 See the **Editing source files** section above for the copy-then-restart workflow.
+
+---
+
+## Reconfiguration Scripts
+
+These are **standalone utilities** — they have no dependency on the NStatus daemon.  
+Double-click them in Nautilus (or run from a terminal) whenever you need to change your WAN connection settings.
+
+### PPPoE (`scripts/pppoe/`)
+
+For connections where Ubuntu dials PPPoE directly (modem in bridge mode).
+
+**1. Edit `scripts/pppoe/pppoe.conf`:**
+
+```bash
+PPPOE_IFACE="eth0"              # interface wired to the modem
+PPPOE_USERNAME="user@isp.net"   # ISP login
+PPPOE_PASSWORD="yourpassword"
+PPPOE_METHOD="pppd"             # "pppd" (bare metal) or "nmcli" (NetworkManager)
+
+# pppd-specific
+PPPOE_PEER_NAME="dsl-provider"  # peer file under /etc/ppp/peers/
+PPPOE_EXTRA_OPTS=""             # extra pppd options (usually leave blank)
+
+# nmcli-specific
+PPPOE_NM_CONNECTION="DSL Connection 1"
+```
+
+**2. Double-click `pppoe_reconfigure.sh`** (or run it in a terminal):
+
+```bash
+bash scripts/pppoe/pppoe_reconfigure.sh
+```
+
+What it does:
+
+| Method | Actions |
+|---|---|
+| `pppd` | Writes `/etc/ppp/peers/<peer>`, updates `chap-secrets` + `pap-secrets`, runs `poff` then `pon`, waits up to 15 s for `ppp0` to appear |
+| `nmcli` | Runs `nmcli connection modify` with new credentials, then `nmcli connection down/up` |
+
+The script asks for your `sudo` password once and then runs unattended.
+
+---
+
+### IPoE (`scripts/ipoe/`)
+
+For connections where the ISP assigns an IP directly on the Ethernet interface (DHCP or static) — no PPP dial-up.
+
+**1. Edit `scripts/ipoe/ipoe.conf`:**
+
+```bash
+IPOE_IFACE="eth0"               # interface wired to the modem / ONT
+IPOE_MODE="dhcp"                # "dhcp" or "static"
+IPOE_METHOD="nmcli"             # "nmcli", "dhclient", or "raw"
+
+# NetworkManager connection name (nmcli only)
+IPOE_NM_CONNECTION="Wired connection 1"
+
+# Static IP settings (IPOE_MODE=static only)
+IPOE_ADDRESS="203.0.113.42/24"  # must include prefix length
+IPOE_GATEWAY="203.0.113.1"
+IPOE_DNS1="168.95.1.1"
+IPOE_DNS2="8.8.8.8"
+```
+
+Valid method / mode combinations:
+
+| `IPOE_METHOD` | `IPOE_MODE` | Notes |
+|---|---|---|
+| `nmcli` | `dhcp` | Sets `ipv4.method auto`, clears static settings |
+| `nmcli` | `static` | Sets `ipv4.method manual` with address / gateway / DNS |
+| `dhclient` | `dhcp` | Runs `dhclient -r` then `dhclient` — no NetworkManager needed |
+| `raw` | `static` | `ip addr flush` + `ip addr add` + `ip route add default` + writes `/etc/resolv.conf` |
+
+**2. Double-click `ipoe_reconfigure.sh`** (or run it in a terminal):
+
+```bash
+bash scripts/ipoe/ipoe_reconfigure.sh
+```
+
+> **Note:** When using `raw` + static, NetworkManager or systemd-resolved may overwrite `/etc/resolv.conf` on next restart.  Use `nmcli` + static if you want the settings to survive reboots.
 
 ---
 
