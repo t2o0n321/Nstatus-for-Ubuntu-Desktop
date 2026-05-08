@@ -8,13 +8,13 @@ network:
   # Fallback target used when primary returns no data
   ping_alt_target: "1.1.1.1"
   # Packets per measurement cycle (keep ≤ 20 to stay within fast_interval)
-  ping_count: 10
+  ping_count: 5
   # Seconds between fast-loop runs (ping + DNS + gateway latency)
-  fast_interval_seconds: 10
+  fast_interval_seconds: 15
   # Seconds between slow-loop runs (throughput test)
   slow_interval_seconds: 600    # 10 minutes
   # Seconds between IP/ISP refresh
-  ip_check_interval_seconds: 300  # 5 minutes
+  ip_check_interval_seconds: 600  # 10 minutes
   # Hostname used for DNS latency measurement
   dns_target: "google.com"
 
@@ -46,6 +46,13 @@ logging:
   max_bytes: 10485760    # 10 MB per log file
   backup_count: 3        # number of rotated log files to keep
 
+# ── Reconnect button ───────────────────────────────────────────────────────
+# Which reconfigure script runs when [Reconnect] is clicked in the widget.
+# "pppoe" → scripts/pppoe/pppoe_reconfigure.sh
+# "ipoe"  → scripts/ipoe/ipoe_reconfigure.sh
+reconnect:
+  method: "pppoe"
+
 # ── Cloudflare service monitoring ──────────────────────────────────────────
 # Add your own services here. Both CDN and Tunnel endpoints are supported.
 # Each entry requires 'url' and optionally 'name'.
@@ -60,7 +67,7 @@ cloudflare:
     #   url:  "https://dash.example.com"
 
   # How often to probe each endpoint (seconds)
-  check_interval_seconds: 60
+  check_interval_seconds: 120
 
   # Maximum seconds to wait for a single HTTP response
   timeout_seconds: 10
