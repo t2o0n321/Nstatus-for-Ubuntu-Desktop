@@ -42,6 +42,9 @@ _DEFAULTS: dict = {
         "max_bytes": 10_485_760,
         "backup_count": 3,
     },
+    "reconnect": {
+        "method": "pppoe",   # "pppoe" or "ipoe"
+    },
     "cloudflare": {
         # List of dicts: [{name: "My Site", url: "https://example.com"}, …]
         "endpoints": [],
@@ -177,6 +180,10 @@ class Config:
     @property
     def throughput_method(self) -> str:
         return self.get("throughput", "method", default="speedtest")
+
+    @property
+    def reconnect_method(self) -> str:
+        return self.get("reconnect", "method", default="pppoe")
 
     @property
     def throughput_timeout(self) -> int:

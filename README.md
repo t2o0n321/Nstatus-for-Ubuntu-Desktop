@@ -11,9 +11,9 @@ Displays real-time QoS metrics, throughput, ISP/IP intelligence, and optional Cl
   ╔══════════════════════════╗
   ║  NStatus Network Monitor ║
   ╚══════════════════════════╝
-  [● Full]  [○ Simple]           ← clickable GTK toggle button
+  [● Full]  [○ Simple]  [Reconnect]   ← clickable GTK overlay
 
-Quality  Excellent  (98/100)
+Quality  Excellent  (98/100)          ← shows "No Connection" if fully offline
 Updated  2026-05-03 23:07:05
 Target   8.8.8.8
 
@@ -57,7 +57,8 @@ Target   8.8.8.8
 ────────────────────────────
 ```
 
-Clicking `[● Full]` / `[○ Simple]` switches to a minimal view showing only Quality, IP, and Update time.
+Clicking `[● Full]` / `[○ Simple]` switches between full and simple views.  
+Clicking `[Reconnect]` runs the configured reconfiguration script (PPPoE or IPoE) in a terminal.
 
 ---
 
@@ -68,14 +69,14 @@ Clicking `[● Full]` / `[○ Simple]` switches to a minimal view showing only Q
 │                          nstatus daemon                             │
 │  (asyncio process — systemd user service)                           │
 │                                                                     │
-│  fast_loop (10 s)     slow_loop (10 min)    ip_loop (5 min)         │
+│  fast_loop (15 s)     slow_loop (10 min)    ip_loop (10 min)        │
 │  ┌──────────────┐     ┌──────────────────┐  ┌───────────────────┐   │
 │  │ping_collector│     │throughput_       │  │ip_collector       │   │
 │  │dns_collector │     │collector         │  │→ public IP/ISP/ASN│   │
 │  │gateway_      │     │→ DL/UL Mbps      │  │                   │   │
 │  │collector     │     └──────────────────┘  │ipv6 check         │   │
 │  │→ RTT/jitter  │                           └───────────────────┘   │
-│  │  loss/DNS/GW │     cloudflare_loop (60 s)  wan_loop (30 min)     │
+│  │  loss/DNS/GW │     cloudflare_loop (120 s) wan_loop (30 min)     │
 │  └──────┬───────┘     ┌──────────────────┐  ┌───────────────────┐   │
 │         │             │cloudflare_       │  │wan_type_collector │   │
 │         │             │collector         │  │→ tracepath PMTU   │   │
@@ -100,7 +101,7 @@ Clicking `[● Full]` / `[○ Simple]` switches to a minimal view showing only Q
                                                   ▼
                                        ┌──────────────────┐
                                        │   Conky Widget   │
-                                       │  (execpi 2 cat)  │
+                                       │  (execpi 5 cat)  │
                                        └──────────────────┘
                                                   ▲
                                        ┌──────────┴──────────┐
@@ -128,7 +129,7 @@ Clicking `[● Full]` / `[○ Simple]` switches to a minimal view showing only Q
 | `src/analyzer/quality_score.py` | Composite 0–100 quality score |
 | `src/storage/database.py` | SQLite WAL-mode store with per-table retention |
 | `src/storage/state_writer.py` | Atomic JSON + Conky-markup writers; Simple Mode aware |
-| `src/toggle_button.py` | GTK overlay button for Full / Simple mode toggle |
+| `src/toggle_button.py` | GTK overlay: Full/Simple toggle + Reconnect button |
 | `scripts/regen_conky.sh` | One-shot regeneration of `conky_data.txt` from `state.json` |
 
 ---
@@ -295,10 +296,10 @@ bash ~/Nstatus-for-Ubuntu-Desktop/scripts/restart.sh button
 network:
   ping_target: "8.8.8.8"            # WAN latency target
   ping_alt_target: "1.1.1.1"        # fallback target
-  ping_count: 10                    # packets per cycle
-  fast_interval_seconds: 10         # ping + DNS + gateway
+  ping_count: 5                     # packets per cycle
+  fast_interval_seconds: 15         # ping + DNS + gateway
   slow_interval_seconds: 600        # throughput test (10 min)
-  ip_check_interval_seconds: 300    # public IP refresh (5 min)
+  ip_check_interval_seconds: 600    # public IP refresh (10 min)
   dns_target: "google.com"          # DNS latency probe host
 ```
 
@@ -340,6 +341,19 @@ No configuration needed — the daemon runs `tracepath` automatically.
 
 The check runs once on startup then every **30 minutes** — WAN type almost never changes mid-session.  Requires `tracepath` from the `iputils-tracepath` package (usually already present via `iputils-ping`).
 
+### Reconnect button
+
+Controls which reconfiguration script runs when `[Reconnect]` is clicked in the widget.
+
+```yaml
+reconnect:
+  method: "pppoe"   # "pppoe" → scripts/pppoe/pppoe_reconfigure.sh
+                    # "ipoe"  → scripts/ipoe/ipoe_reconfigure.sh
+```
+
+The script opens a terminal automatically and asks for `sudo` once.  
+Edit credentials in `~/.config/nstatus/scripts/pppoe/pppoe.conf` (or `ipoe.conf`) before using this button.
+
 ### Cloudflare monitoring
 
 ```yaml
@@ -349,7 +363,7 @@ cloudflare:
       url: "https://example.com"
     - name: "API"
       url: "https://api.example.com/health"
-  check_interval_seconds: 60
+  check_interval_seconds: 120
   timeout_seconds: 10
 ```
 
@@ -389,7 +403,16 @@ logging:
 Clicking `[● Full]` / `[○ Simple]` in the widget toggles between views.
 
 **Full mode** — all sections (QoS, LAN, Throughput, History, Identity, Cloudflare).  
-**Simple mode** — Quality score, Updated time, Public IP, and IP Type only.
+Quality displays as a labelled score (`Excellent (98/100)`), or **No Connection** in red when WAN packet loss reaches 100%.
+
+**Simple mode** — two rows only:
+
+```
+Internet Connected  ✓       ← green ✓ when score ≥ 75, red ✗ below
+Public IP           203.0.113.42
+```
+
+Public IP shows `N/A` in both modes whenever WAN packet loss hits 100% — no waiting for the 10-minute IP refresh cycle.
 
 The state is persisted as a flag file: `~/.local/share/nstatus/simple_mode`.  
 Toggle from the terminal:
@@ -541,14 +564,14 @@ bash ~/Nstatus-for-Ubuntu-Desktop/scripts/restart.sh button
 
 ### Widget shows stale data / "NStatus daemon not running"
 
-Conky re-reads `conky_data.txt` every 2 seconds.  If the file is stale, the daemon has crashed:
+Conky re-reads `conky_data.txt` every 5 seconds.  If the file is stale, the daemon has crashed:
 
 ```bash
 systemctl --user restart nstatus.service
 journalctl --user -u nstatus -n 50
 ```
 
-### Clicking the button does nothing
+### Clicking the toggle does nothing
 
 Check that `regen_conky.sh` is executable and that the venv exists:
 
@@ -556,6 +579,28 @@ Check that `regen_conky.sh` is executable and that the venv exists:
 ls -la ~/.config/nstatus/scripts/regen_conky.sh
 ls -la ~/.local/share/nstatus/venv/bin/python3
 chmod +x ~/.config/nstatus/scripts/regen_conky.sh
+```
+
+### Reconnect button does nothing
+
+Check that the reconfigure script exists and is executable:
+
+```bash
+# Default (PPPoE)
+ls -la ~/.config/nstatus/scripts/pppoe/pppoe_reconfigure.sh
+chmod +x ~/.config/nstatus/scripts/pppoe/pppoe_reconfigure.sh
+
+# IPoE (if reconnect.method = "ipoe")
+ls -la ~/.config/nstatus/scripts/ipoe/ipoe_reconfigure.sh
+chmod +x ~/.config/nstatus/scripts/ipoe/ipoe_reconfigure.sh
+```
+
+Check that `reconnect.method` in `~/.config/nstatus/config.yaml` matches your connection type (`"pppoe"` or `"ipoe"`).  
+Also verify that `python3-yaml` is available system-wide (the toggle button uses system Python, not the venv):
+
+```bash
+python3 -c "import yaml; print('ok')"
+# If that fails: sudo apt install python3-yaml
 ```
 
 ### "speedtest-cli not found" or slow throughput tests
@@ -671,7 +716,10 @@ See the **Editing source files** section above for the copy-then-restart workflo
 ## Reconfiguration Scripts
 
 These are **standalone utilities** — they have no dependency on the NStatus daemon.  
-Double-click them in Nautilus (or run from a terminal) whenever you need to change your WAN connection settings.
+Double-click them in Nautilus, run from a terminal, or click the **[Reconnect]** button in the widget (set `reconnect.method` in `config.yaml` to choose which one).
+
+The installed copies live in `~/.config/nstatus/scripts/pppoe/` and `~/.config/nstatus/scripts/ipoe/`.  
+Edit credentials there — changes to the repo copies have no effect unless you copy them back.
 
 ### PPPoE (`scripts/pppoe/`)
 

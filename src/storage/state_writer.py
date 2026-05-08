@@ -165,12 +165,13 @@ def format_conky_text(state: Dict[str, Any]) -> str:  # noqa: C901
         ipv6_str = f"{_c(DM)}Checking…"
 
     # ── IP identity ───────────────────────────────────────────────── #
+    _disconnected = (loss or 0) >= 99
     ip_info  = state.get("ip_info", {})
-    pub_ip   = ip_info.get("ip",      "N/A")
-    isp      = ip_info.get("isp",     "N/A")
-    asn      = ip_info.get("asn",     "N/A")
-    city     = ip_info.get("city",    "")
-    country  = ip_info.get("country", "")
+    pub_ip   = "N/A" if _disconnected else (ip_info.get("ip")  or "N/A")
+    isp      = "N/A" if _disconnected else (ip_info.get("isp") or "N/A")
+    asn      = "N/A" if _disconnected else (ip_info.get("asn") or "N/A")
+    city     = "" if _disconnected else ip_info.get("city",    "")
+    country  = "" if _disconnected else ip_info.get("country", "")
     location = ", ".join(p for p in (city, country) if p) or "N/A"
 
     ip_type        = state.get("ip_type",        "UNCERTAIN")
@@ -203,6 +204,8 @@ def format_conky_text(state: Dict[str, Any]) -> str:  # noqa: C901
         "",
         "",
         # Quality score — prominently at the top
+        f"  {_c(D)}Quality       {_c('#ff5252')}No Connection"
+        if _disconnected else
         f"  {_c(D)}Quality       {_c(q_color)}{q_label}"
         + (f"  {_c(D)}({q_score}/100)" if q_score is not None else ""),
         f"  {_c(D)}Updated       {_c(W)}{ts}",
@@ -332,21 +335,21 @@ def format_conky_text(state: Dict[str, Any]) -> str:  # noqa: C901
 
 
 def format_simple_conky_text(state: Dict[str, Any]) -> str:
-    """Compact view: Quality, Updated, Public IP, IP Type only."""
-    ts = state.get("updated_at", "---")
-
+    """Compact view: Internet Connected status and Public IP only."""
     q_score = state.get("quality_score")
-    q_label = state.get("quality_label", "N/A")
-    q_color = state.get("quality_color", "#888888")
 
-    ip_info      = state.get("ip_info", {})
-    pub_ip       = ip_info.get("ip", "N/A")
-    ip_type      = state.get("ip_type", "UNCERTAIN")
-    ip_type_color = {"DYNAMIC": "#ffca28", "LIKELY_STATIC": "#00e676"}.get(
-        ip_type, "#888888"
-    )
+    _loss        = (state.get("fast_metrics") or {}).get("packet_loss") or 0
+    _disconnected = _loss >= 99
+    ip_info = state.get("ip_info", {})
+    pub_ip  = "N/A" if _disconnected else (ip_info.get("ip") or "N/A")
 
     SEP = f"{_c('#333333')}────────────────────────────────"
+
+    if q_score is not None:
+        q_sym = f"{_c('#00e676')}✓" if q_score >= 75 else f"{_c('#ff5252')}✗"
+    else:
+        q_sym = f"{_c('#888888')}✗"
+    q_emoji = f"${{voffset -7}}${{font DejaVu Sans Mono:size=16}}{q_sym}${{font}}${{voffset 7}}"
 
     lines = [
         f"  {_c(H)}╔{'═' * 26}╗",
@@ -354,12 +357,8 @@ def format_simple_conky_text(state: Dict[str, Any]) -> str:
         f"  {_c(H)}╚{'═' * 26}╝",
         "",
         "",
-        f"  {_c(D)}Quality       {_c(q_color)}{q_label}"
-        + (f"  {_c(D)}({q_score}/100)" if q_score is not None else ""),
-        f"  {_c(D)}Updated       {_c(W)}{ts}",
-        "",
+        f"  {_c(D)}Internet Connected  {q_emoji}",
         f"  {_c(D)}Public IP     {_c(W)}{pub_ip}",
-        f"  {_c(D)}IP Type       {_c(ip_type_color)}{ip_type}",
         "",
         SEP,
     ]

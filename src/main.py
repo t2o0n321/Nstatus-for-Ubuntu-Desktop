@@ -208,8 +208,8 @@ class NStatusDaemon:
             await asyncio.sleep(interval)
 
     async def _history_loop(self) -> None:
-        """Refresh 1 h and 24 h historical averages from SQLite every 5 min."""
-        logger.info("history_loop started (interval=300s)")
+        """Refresh 1 h and 24 h historical averages from SQLite every 10 min."""
+        logger.info("history_loop started (interval=600s)")
         while self._running:
             try:
                 self._state["history_1h"]  = self._db.get_fast_averages(hours=1)
@@ -217,7 +217,7 @@ class NStatusDaemon:
                 self._flush()
             except Exception as exc:
                 logger.error("history_loop error: %s", exc)
-            await asyncio.sleep(300)
+            await asyncio.sleep(600)
 
     async def _cleanup_loop(self) -> None:
         cfg = self._cfg
@@ -357,6 +357,8 @@ class NStatusDaemon:
             logger.error("IPv6 check raised: %s", ipv6)
 
         if not isinstance(ip_info, dict) or not ip_info:
+            self._state["ip_info"] = {}
+            self._flush()
             return
 
         self._ip_tracker.check_and_record(
