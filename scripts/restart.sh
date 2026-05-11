@@ -44,11 +44,8 @@ _restart_conky() {
 }
 
 _restart_button() {
-    echo "  → restarting toggle button (DISPLAY=$DISPLAY)"
-    pkill -f toggle_button.py 2>/dev/null || true
-    sleep 0.5
-    nohup python3 ~/.config/nstatus/src/toggle_button.py > /tmp/nstatus-toggle.log 2>&1 &
-    echo "     PID $!  (log: /tmp/nstatus-toggle.log)"
+    echo "  → restarting toggle button"
+    systemctl --user restart nstatus-toggle.service
 }
 
 echo "NStatus restart: $TARGET"

@@ -18,7 +18,7 @@ DATA_DIR="${HOME}/.local/share/nstatus"
 SYSTEMD_USER_DIR="${HOME}/.config/systemd/user"
 
 # Stop and disable services
-for svc in nstatus-conky nstatus; do
+for svc in nstatus-toggle nstatus-conky nstatus; do
     if systemctl --user is-active --quiet "${svc}.service" 2>/dev/null; then
         info "Stopping ${svc}.service…"
         systemctl --user stop "${svc}.service"
