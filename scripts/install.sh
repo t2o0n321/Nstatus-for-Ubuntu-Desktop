@@ -158,6 +158,8 @@ else
 fi
 
 info "Starting nstatus-toggle.service (mode/reconnect buttons)…"
+# Clear any previous failed/start-limit-hit state so restart is never silently skipped.
+systemctl --user reset-failed nstatus-toggle.service 2>/dev/null || true
 systemctl --user restart nstatus-toggle.service
 if systemctl --user is-active --quiet nstatus-toggle.service; then
     success "nstatus-toggle.service started"

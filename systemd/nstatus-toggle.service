@@ -1,13 +1,17 @@
 [Unit]
 Description=NStatus Mode Toggle Button
-After=graphical-session.target
+After=nstatus-conky.service graphical-session.target
 PartOf=graphical-session.target
+# Allow up to 5 restarts per 2 minutes before giving up
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 Type=simple
 ExecStart=/usr/bin/python3 %h/.config/nstatus/src/toggle_button.py
-Environment=DISPLAY=:0
-Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+# Do NOT hard-code DISPLAY here — inherited from the login session
+# (same approach as nstatus-conky.service).
+Environment=GDK_BACKEND=x11
 Restart=on-failure
 RestartSec=5
 WorkingDirectory=%h/.config/nstatus
